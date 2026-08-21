@@ -64,10 +64,19 @@ New-Button $dashboard 'Полная настройка' 865 295 165 {InvokeAdapt
 # Приложения: живые подключения и история
 $traffic=New-Page $tabs 'Приложения';$appTabs=New-Object Windows.Forms.TabControl;$appTabs.Dock='Fill';$traffic.Controls.Add($appTabs)
 $livePage=New-Page $appTabs 'Сейчас'
-$liveSplit=New-Object Windows.Forms.SplitContainer;$liveSplit.Dock='Fill';$liveSplit.Orientation='Vertical';$liveSplit.SplitterDistance=175;$liveSplit.FixedPanel='Panel1';$liveSplit.Panel1MinSize=145;$livePage.Controls.Add($liveSplit)
-$liveApps=New-Object Windows.Forms.ListBox;$liveApps.Dock='Fill';$liveApps.IntegralHeight=$false;$liveApps.Font=New-Object Drawing.Font('Segoe UI',10);$liveSplit.Panel1.Controls.Add($liveApps)
-$liveGrid=New-Grid;$liveGrid.Dock='Fill';$liveSplit.Panel2.Controls.Add($liveGrid)
-$liveTop=New-Object Windows.Forms.Panel;$liveTop.Dock='Top';$liveTop.Height=92;$livePage.Controls.Add($liveTop);$liveTop.BringToFront()
+$liveLayout=New-Object Windows.Forms.TableLayoutPanel;$liveLayout.Dock='Fill';$liveLayout.Margin=New-Object Windows.Forms.Padding(0);$liveLayout.Padding=New-Object Windows.Forms.Padding(0);$liveLayout.ColumnCount=1;$liveLayout.RowCount=2
+[void]$liveLayout.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent,100)))
+[void]$liveLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Absolute,92)))
+[void]$liveLayout.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent,100)))
+$livePage.Controls.Add($liveLayout)
+$liveTop=New-Object Windows.Forms.Panel;$liveTop.Dock='Fill';$liveTop.Margin=New-Object Windows.Forms.Padding(0);$liveLayout.Controls.Add($liveTop,0,0)
+$liveContent=New-Object Windows.Forms.TableLayoutPanel;$liveContent.Dock='Fill';$liveContent.Margin=New-Object Windows.Forms.Padding(0);$liveContent.Padding=New-Object Windows.Forms.Padding(0);$liveContent.ColumnCount=2;$liveContent.RowCount=1
+[void]$liveContent.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Absolute,220)))
+[void]$liveContent.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::Percent,100)))
+[void]$liveContent.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::Percent,100)))
+$liveLayout.Controls.Add($liveContent,0,1)
+$liveApps=New-Object Windows.Forms.ListBox;$liveApps.Dock='Fill';$liveApps.Margin=New-Object Windows.Forms.Padding(0,0,6,0);$liveApps.IntegralHeight=$false;$liveApps.HorizontalScrollbar=$true;$liveApps.Font=New-Object Drawing.Font('Segoe UI',10);$liveContent.Controls.Add($liveApps,0,0)
+$liveGrid=New-Grid;$liveGrid.Dock='Fill';$liveGrid.Margin=New-Object Windows.Forms.Padding(0);$liveGrid.MinimumSize=New-Object Drawing.Size(500,200);$liveContent.Controls.Add($liveGrid,1,0)
 $liveStatus=New-Object Windows.Forms.Label;$liveStatus.SetBounds(355,58,650,24);$liveTop.Controls.Add($liveStatus)
 $script:captureActive=$false;$script:captureProcess='';$script:captureBaseline=@{};$script:captureRows=@{};$script:liveRows=@();$script:liveProcessMap=@{};$script:liveGroupsFingerprint=''
 $showLiveSelection={
