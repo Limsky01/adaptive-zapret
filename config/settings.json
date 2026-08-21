@@ -1,0 +1,22 @@
+{
+  "SchemaVersion": 1,
+  "EngineRoot": "",
+  "AutoStartCollector": true,
+  "MaxAttemptsPerSession": 12,
+  "UpdateManifestUrl": "https://raw.githubusercontent.com/Limsky01/adaptive-zapret/main/release-manifest.json",
+  "ProtectedProcesses": [
+    "System",
+    "svchost",
+    "lsass",
+    "services",
+    "wininit",
+    "winlogon",
+    "MsMpEng"
+  ],
+  "ProtectedDomains": [
+    "microsoft.com",
+    "windowsupdate.com",
+    "office.com",
+    "live.com"
+  ]
+}

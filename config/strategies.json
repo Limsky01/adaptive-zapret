@@ -1,0 +1,20 @@
+{
+  "SchemaVersion": 1,
+  "Profiles": [
+    { "Id": "multisplit-1", "Protocol": "TCP", "Args": ["--dpi-desync=multisplit", "--dpi-desync-split-pos=1"] },
+    { "Id": "multisplit-sniext", "Protocol": "TCP", "Args": ["--dpi-desync=multisplit", "--dpi-desync-split-pos=sniext+1"] },
+    { "Id": "multisplit-midsld", "Protocol": "TCP", "Args": ["--dpi-desync=multisplit", "--dpi-desync-split-pos=midsld"] },
+    { "Id": "multisplit-1-badseq", "Protocol": "TCP", "Args": ["--dpi-desync=multisplit", "--dpi-desync-split-pos=1", "--dpi-desync-fooling=badseq"] },
+    { "Id": "multisplit-1-md5sig", "Protocol": "TCP", "Args": ["--dpi-desync=multisplit", "--dpi-desync-split-pos=1", "--dpi-desync-fooling=md5sig"] },
+    { "Id": "multidisorder-1", "Protocol": "TCP", "Args": ["--dpi-desync=multidisorder", "--dpi-desync-split-pos=1"] },
+    { "Id": "multidisorder-sniext", "Protocol": "TCP", "Args": ["--dpi-desync=multidisorder", "--dpi-desync-split-pos=sniext+1"] },
+    { "Id": "fake-multisplit-r3", "Protocol": "TCP", "Args": ["--dpi-desync=fake,multisplit", "--dpi-desync-repeats=3", "--dpi-desync-split-pos=1"] },
+    { "Id": "fake-multisplit-r6", "Protocol": "TCP", "Args": ["--dpi-desync=fake,multisplit", "--dpi-desync-repeats=6", "--dpi-desync-split-pos=1"] },
+    { "Id": "fake-multidisorder-r6", "Protocol": "TCP", "Args": ["--dpi-desync=fake,multidisorder", "--dpi-desync-repeats=6", "--dpi-desync-split-pos=1"] },
+    { "Id": "hostfakesplit", "Protocol": "TCP", "Args": ["--dpi-desync=hostfakesplit", "--dpi-desync-hostfakesplit-mod=host=www.google.com"] },
+    { "Id": "hostfakesplit-alt", "Protocol": "TCP", "Args": ["--dpi-desync=hostfakesplit", "--dpi-desync-hostfakesplit-mod=host=www.google.com,altorder=1"] },
+    { "Id": "fake-quic-r3", "Protocol": "UDP", "Args": ["--dpi-desync=fake", "--dpi-desync-repeats=3"] },
+    { "Id": "fake-quic-r6", "Protocol": "UDP", "Args": ["--dpi-desync=fake", "--dpi-desync-repeats=6"] },
+    { "Id": "fake-quic-r10", "Protocol": "UDP", "Args": ["--dpi-desync=fake", "--dpi-desync-repeats=10"] }
+  ]
+}
