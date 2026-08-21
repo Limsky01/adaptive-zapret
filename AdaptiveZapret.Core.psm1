@@ -15,7 +15,7 @@ $MapFile = Join-Path $DataDir 'traffic-map.csv'
 $AppsFile = Join-Path $DataDir 'apps-map.csv'
 $CollectorPidFile = Join-Path $DataDir 'collector.pid'
 $SysmonLog = 'Microsoft-Windows-Sysmon/Operational'
-$Version = '1.2.0'
+$Version = '1.2.3'
 
 New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 
@@ -345,19 +345,41 @@ function Get-AdaptiveKnownDomain([string]$Process,[string]$Ip,[int]$Port){
 }
 
 function InvokeAdaptiveLiveConnections {
-    $rows=@()
+    # This function runs every second while the live tab is visible. Keep the
+    # work bounded: do not reread the complete journal or apps map per socket.
+    $rows=New-Object 'System.Collections.Generic.List[object]'
+    $processCache=@{}
+    $domainCache=@{}
+    $apps=Join-Path $DataDir 'apps-map.csv'
+    if(Test-Path -LiteralPath $apps){
+        foreach($known in @(Import-Csv -LiteralPath $apps)){
+            if($known.Domain -and $known.Domain -ne '-'){
+                $domainKey='{0}|{1}|{2}' -f ([string]$known.Process).ToLowerInvariant(),$known.DestinationIp,[int]$known.DestinationPort
+                if(-not $domainCache.ContainsKey($domainKey)){$domainCache[$domainKey]=[string]$known.Domain}
+            }
+        }
+    }
     foreach($connection in @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)){
-        $details=Get-ProcessDetails -ProcessId ([int]$connection.OwningProcess) -ImageHint $null
+        $pidValue=[int]$connection.OwningProcess
+        if(-not $processCache.ContainsKey($pidValue)){$processCache[$pidValue]=Get-ProcessDetails -ProcessId $pidValue -ImageHint $null}
+        $details=$processCache[$pidValue]
         $candidate=[pscustomobject]@{Process=$details.Name;DestinationIp=$connection.RemoteAddress;DestinationPort=$connection.RemotePort}
         if(-not $details.Name -or (Test-IsNoiseTarget $candidate)){continue}
-        $rows+=[pscustomobject][ordered]@{Process=$details.Name;Domain=(Get-AdaptiveKnownDomain $details.Name $connection.RemoteAddress ([int]$connection.RemotePort));DestinationIp=$connection.RemoteAddress;DestinationPort=$connection.RemotePort;Protocol='TCP';State='Подключено';ObservedUtc=[DateTime]::UtcNow.ToString('HH:mm:ss')}
+        $domainKey='{0}|{1}|{2}' -f ([string]$details.Name).ToLowerInvariant(),$connection.RemoteAddress,[int]$connection.RemotePort
+        $domain=$(if($domainCache.ContainsKey($domainKey)){$domainCache[$domainKey]}else{''})
+        $rows.Add([pscustomobject][ordered]@{Process=$details.Name;Domain=$domain;DestinationIp=$connection.RemoteAddress;DestinationPort=$connection.RemotePort;Protocol='TCP';State='Подключено';ObservedUtc=[DateTime]::Now.ToString('HH:mm:ss')})
     }
     $cutoff=[DateTime]::UtcNow.AddSeconds(-20)
-    foreach($connection in @(Read-JsonLines $ConnectionLog|Where-Object{$_.Protocol -eq 'UDP' -and [string]$_.Initiated -eq 'true'})){
+    $recentLines=$(if(Test-Path -LiteralPath $ConnectionLog){@(Get-Content -LiteralPath $ConnectionLog -Tail 1000 -ErrorAction SilentlyContinue)}else{@()})
+    foreach($line in $recentLines){
+        if([string]::IsNullOrWhiteSpace($line)){continue}
+        try{$connection=$line|ConvertFrom-Json}catch{continue}
+        if($connection.Protocol -ne 'UDP' -or [string]$connection.Initiated -ne 'true'){continue}
         $time=[DateTime]::MinValue;if(-not [DateTime]::TryParse([string]$connection.TimeUtc,[ref]$time) -or $time.ToUniversalTime() -lt $cutoff){continue}
         if(Test-IsNoiseTarget $connection){continue}
-        $domain=$(if($connection.DestinationHostname -and $connection.DestinationHostname -ne '-'){$connection.DestinationHostname}else{Get-AdaptiveKnownDomain $connection.Process $connection.DestinationIp ([int]$connection.DestinationPort)})
-        $rows+=[pscustomobject][ordered]@{Process=$connection.Process;Domain=$domain;DestinationIp=$connection.DestinationIp;DestinationPort=$connection.DestinationPort;Protocol='UDP';State='Недавно';ObservedUtc=$time.ToLocalTime().ToString('HH:mm:ss')}
+        $domainKey='{0}|{1}|{2}' -f ([string]$connection.Process).ToLowerInvariant(),$connection.DestinationIp,[int]$connection.DestinationPort
+        $domain=$(if($connection.DestinationHostname -and $connection.DestinationHostname -ne '-'){$connection.DestinationHostname}elseif($domainCache.ContainsKey($domainKey)){$domainCache[$domainKey]}else{''})
+        $rows.Add([pscustomobject][ordered]@{Process=$connection.Process;Domain=$domain;DestinationIp=$connection.DestinationIp;DestinationPort=$connection.DestinationPort;Protocol='UDP';State='Недавно';ObservedUtc=$time.ToLocalTime().ToString('HH:mm:ss')})
     }
     return @($rows|Sort-Object Process,DestinationIp,DestinationPort,Protocol -Unique)
 }

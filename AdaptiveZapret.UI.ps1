@@ -30,7 +30,7 @@ function Sync-LiveGrid($grid,[array]$rows){
     $existing=@{};foreach($row in @($grid.Rows)){if($row.IsNewRow){continue};$key='{0}|{1}|{2}|{3}' -f $row.Cells['Process'].Value,$row.Cells['DestinationIp'].Value,$row.Cells['DestinationPort'].Value,$row.Cells['Protocol'].Value;$existing[$key]=$row}
     $grid.SuspendLayout();try{
         foreach($key in @($existing.Keys)){if(-not $incoming.ContainsKey($key)){$grid.Rows.Remove($existing[$key]);$existing.Remove($key)}}
-        foreach($key in @($incoming.Keys)){$item=$incoming[$key];$row=$existing[$key];if(-not $row){$index=$grid.Rows.Add();$row=$grid.Rows[$index]};foreach($name in $columns){$row.Cells[$name].Value=[string]$item.$name};if($key -eq $selectedKey){$row.Selected=$true;$grid.CurrentCell=$row.Cells[0]}}
+        foreach($key in @($incoming.Keys)){$item=$incoming[$key];$row=$existing[$key];if(-not $row){$index=$grid.Rows.Add();$row=$grid.Rows[$index]};foreach($name in $columns){$value=[string]$item.$name;if([string]$row.Cells[$name].Value -ne $value){$row.Cells[$name].Value=$value}};if($key -eq $selectedKey){$row.Selected=$true;$grid.CurrentCell=$row.Cells[0]}}
     }finally{$grid.ResumeLayout()}
 }
 function Get-SelectedRow($grid){if(-not $grid.CurrentRow -or $grid.CurrentRow.IsNewRow){throw 'Выберите подключение.'};$item=[ordered]@{};foreach($column in $grid.Columns){$item[$column.Name]=[string]$grid.CurrentRow.Cells[$column.Name].Value};return [pscustomobject]$item}
