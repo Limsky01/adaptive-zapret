@@ -19,6 +19,20 @@ function New-Grid{$g=New-Object Windows.Forms.DataGridView;$g.ReadOnly=$true;$g.
 function Set-GridRows($grid,[array]$rows){
     $grid.SuspendLayout();try{$grid.DataSource=$null;$grid.Rows.Clear();$grid.Columns.Clear();if(-not $rows.Count){return};$columns=@($rows[0].PSObject.Properties.Name);foreach($name in $columns){[void]$grid.Columns.Add($name,$name)};foreach($item in $rows){$values=@();foreach($name in $columns){$values+=[string]$item.$name};[void]$grid.Rows.Add($values)}}finally{$grid.ResumeLayout()}
 }
+function Sync-LiveGrid($grid,[array]$rows){
+    # Live view is refreshed frequently. Update existing cells instead of rebuilding
+    # the whole DataGridView (recreating columns caused visible freezes on browsers).
+    $columns=@('Process','Domain','DestinationIp','DestinationPort','Protocol','State','ObservedUtc')
+    if($grid.Columns.Count -eq 0){foreach($name in $columns){[void]$grid.Columns.Add($name,$name)}}
+    $selectedKey=$null
+    if($grid.CurrentRow -and -not $grid.CurrentRow.IsNewRow){$selectedKey='{0}|{1}|{2}|{3}' -f $grid.CurrentRow.Cells['Process'].Value,$grid.CurrentRow.Cells['DestinationIp'].Value,$grid.CurrentRow.Cells['DestinationPort'].Value,$grid.CurrentRow.Cells['Protocol'].Value}
+    $incoming=@{};foreach($item in @($rows)){$key='{0}|{1}|{2}|{3}' -f $item.Process,$item.DestinationIp,$item.DestinationPort,$item.Protocol;$incoming[$key]=$item}
+    $existing=@{};foreach($row in @($grid.Rows)){if($row.IsNewRow){continue};$key='{0}|{1}|{2}|{3}' -f $row.Cells['Process'].Value,$row.Cells['DestinationIp'].Value,$row.Cells['DestinationPort'].Value,$row.Cells['Protocol'].Value;$existing[$key]=$row}
+    $grid.SuspendLayout();try{
+        foreach($key in @($existing.Keys)){if(-not $incoming.ContainsKey($key)){$grid.Rows.Remove($existing[$key]);$existing.Remove($key)}}
+        foreach($key in @($incoming.Keys)){$item=$incoming[$key];$row=$existing[$key];if(-not $row){$index=$grid.Rows.Add();$row=$grid.Rows[$index]};foreach($name in $columns){$row.Cells[$name].Value=[string]$item.$name};if($key -eq $selectedKey){$row.Selected=$true;$grid.CurrentCell=$row.Cells[0]}}
+    }finally{$grid.ResumeLayout()}
+}
 function Get-SelectedRow($grid){if(-not $grid.CurrentRow -or $grid.CurrentRow.IsNewRow){throw 'Выберите подключение.'};$item=[ordered]@{};foreach($column in $grid.Columns){$item[$column.Name]=[string]$grid.CurrentRow.Cells[$column.Name].Value};return [pscustomobject]$item}
 function Start-LearningFromGrid($grid){$r=Get-SelectedRow $grid;$spec="$($r.Process)|$($r.Domain)|$($r.DestinationIp)|$($r.DestinationPort)|$($r.Protocol)";$result=Invoke-Captured{InvokeAdaptiveLearn -Spec $spec};$tabs.SelectedTab=$learn;[Windows.Forms.MessageBox]::Show(($result+"`r`n`r`nСоединение перезапущено. Проверьте вход в сессию."),'Adaptive Zapret')|Out-Null}
 
@@ -50,12 +64,15 @@ New-Button $dashboard 'Полная настройка' 865 295 165 {InvokeAdapt
 $traffic=New-Page $tabs 'Приложения';$appTabs=New-Object Windows.Forms.TabControl;$appTabs.Dock='Fill';$traffic.Controls.Add($appTabs)
 $livePage=New-Page $appTabs 'Сейчас';$liveGrid=New-Grid;$liveGrid.Dock='Fill';$livePage.Controls.Add($liveGrid)
 $liveTop=New-Object Windows.Forms.Panel;$liveTop.Dock='Top';$liveTop.Height=54;$livePage.Controls.Add($liveTop);$liveTop.BringToFront()
-$liveStatus=New-Object Windows.Forms.Label;$liveStatus.SetBounds(570,18,430,24);$liveTop.Controls.Add($liveStatus)
-$refreshLive={try{$rows=@(InvokeAdaptiveLiveConnections);Set-GridRows $liveGrid $rows;$liveStatus.Text=('Активных/недавних: {0} · {1}' -f $rows.Count,(Get-Date -Format 'HH:mm:ss'))}catch{$liveStatus.Text=$_.Exception.Message}}
+$liveStatus=New-Object Windows.Forms.Label;$liveStatus.SetBounds(875,18,170,24);$liveTop.Controls.Add($liveStatus)
+$captureActive=$false;$captureProcess='';$captureBaseline=@{};$captureRows=@{}
+$refreshLive={try{$rows=@(InvokeAdaptiveLiveConnections);Sync-LiveGrid $liveGrid $rows;if($captureActive){foreach($row in $rows){if($row.Process -ieq $captureProcess){$key='{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol;if(-not $captureBaseline.ContainsKey($key)){$captureRows[$key]=$row}}}};$suffix=$(if($captureActive){" · запись: $captureProcess ($($captureRows.Count))"}else{''});$liveStatus.Text=('Активных/недавних: {0} · {1}{2}' -f $rows.Count,(Get-Date -Format 'HH:mm:ss'),$suffix)}catch{$liveStatus.Text=$_.Exception.Message}}
 New-Button $liveTop 'Обновить сейчас' 10 8 155 $refreshLive|Out-Null
 New-Button $liveTop 'Подобрать zapret' 180 8 170 {Start-LearningFromGrid $liveGrid}|Out-Null
 New-Button $liveTop 'Direct' 365 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode direct}|Out-Null
 New-Button $liveTop 'Block' 470 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode block}|Out-Null
+New-Button $liveTop 'Запись действия' 570 8 150 {$r=Get-SelectedRow $liveGrid;$captureProcess=$r.Process;$captureBaseline=@{};$captureRows=@{};foreach($row in @(InvokeAdaptiveLiveConnections)){if($row.Process -ieq $captureProcess){$captureBaseline['{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol]=$true}};$captureActive=$true;$liveStatus.Text="Запись $captureProcess: обновите нужную вкладку"}|Out-Null
+New-Button $liveTop 'Стоп записи' 735 8 130 {$captureActive=$false;$captured=@($captureRows.Values);if($captured.Count){Sync-LiveGrid $liveGrid $captured;$liveStatus.Text="Новых: $($captured.Count)"}else{$liveStatus.Text='Новых соединений нет'}}|Out-Null
 
 $historyPage=New-Page $appTabs 'История';$historyGrid=New-Grid;$historyGrid.Dock='Fill';$historyPage.Controls.Add($historyGrid)
 $historyTop=New-Object Windows.Forms.Panel;$historyTop.Dock='Top';$historyTop.Height=54;$historyPage.Controls.Add($historyTop);$historyTop.BringToFront()
@@ -89,7 +106,8 @@ New-Button $update 'Сохранить канал' 790 105 180 {InvokeAdaptiveUp
 New-Button $update 'Проверить и обновить' 25 165 220 {InvokeAdaptiveUpdateConfigure $updateUrl.Text;InvokeAdaptiveUpdate;$form.Close()}|Out-Null
 New-Button $update 'Установить ZIP вручную' 260 165 220 {$dialog=New-Object Windows.Forms.OpenFileDialog;$dialog.Filter='Adaptive Zapret ZIP (*.zip)|*.zip';if($dialog.ShowDialog() -eq 'OK'){InvokeAdaptiveUpdate -PackagePath $dialog.FileName;$form.Close()}}|Out-Null
 
-$liveTimer=New-Object Windows.Forms.Timer;$liveTimer.Interval=2000;$liveTimer.Add_Tick({if($tabs.SelectedTab -eq $traffic -and $appTabs.SelectedTab -eq $livePage){&$refreshLive}})
+$liveRefreshBusy=$false
+$liveTimer=New-Object Windows.Forms.Timer;$liveTimer.Interval=1000;$liveTimer.Add_Tick({if(-not $liveRefreshBusy -and $tabs.SelectedTab -eq $traffic -and $appTabs.SelectedTab -eq $livePage){$liveRefreshBusy=$true;try{&$refreshLive}finally{$liveRefreshBusy=$false}}})
 $form.Add_Shown({try{&$refreshStatus;&$loadRules;&$refreshLive;$updateState=InvokeAdaptiveUpdateStatus;$updateInfo.Text=("Установлена версия: {0}`r`nКанал обновлений:" -f $updateState.CurrentVersion);$updateUrl.Text=$updateState.ManifestUrl;$liveTimer.Start();Add-Content $startupLog ("{0} UI ready" -f [DateTime]::Now.ToString('s')) -Encoding UTF8}catch{$details=$_|Out-String;Add-Content $startupLog $details -Encoding UTF8;[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Adaptive Zapret — ошибка запуска','OK','Error')|Out-Null}})
 $form.Add_FormClosed({$liveTimer.Stop();$liveTimer.Dispose()})
 [void]$form.ShowDialog()
