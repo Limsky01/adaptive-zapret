@@ -15,7 +15,7 @@ function New-Page($parent,[string]$name){$p=New-Object Windows.Forms.TabPage;$p.
 function New-Button($parent,[string]$text,[int]$x,[int]$y,[int]$w,[scriptblock]$action){$b=New-Object Windows.Forms.Button;$b.Text=$text;$b.SetBounds($x,$y,$w,36);$handler={try{&$action}catch{[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Adaptive Zapret','OK','Error')|Out-Null}}.GetNewClosure();$b.Add_Click($handler);$parent.Controls.Add($b);return $b}
 function New-ValueLabel($parent,[string]$title,[int]$x,[int]$y,[int]$w){$box=New-Object Windows.Forms.GroupBox;$box.Text=$title;$box.SetBounds($x,$y,$w,78);$label=New-Object Windows.Forms.Label;$label.SetBounds(12,30,$w-24,30);$label.Font=New-Object Drawing.Font('Segoe UI',12,[Drawing.FontStyle]::Bold);$box.Controls.Add($label);$parent.Controls.Add($box);return $label}
 function Invoke-Captured([scriptblock]$Action){return (&$Action 6>&1|Out-String).Trim()}
-function New-Grid{$g=New-Object Windows.Forms.DataGridView;$g.ReadOnly=$true;$g.AllowUserToAddRows=$false;$g.AllowUserToDeleteRows=$false;$g.SelectionMode='FullRowSelect';$g.MultiSelect=$false;$g.AutoSizeColumnsMode='DisplayedCells';$g.BackgroundColor=[Drawing.Color]::White;$g.BorderStyle='Fixed3D';return $g}
+function New-Grid{$g=New-Object Windows.Forms.DataGridView;$g.ReadOnly=$true;$g.AllowUserToAddRows=$false;$g.AllowUserToDeleteRows=$false;$g.SelectionMode='FullRowSelect';$g.MultiSelect=$true;$g.AutoSizeColumnsMode='Fill';$g.BackgroundColor=[Drawing.Color]::White;$g.BorderStyle='Fixed3D';return $g}
 function Set-GridRows($grid,[array]$rows){
     $grid.SuspendLayout();try{$grid.DataSource=$null;$grid.Rows.Clear();$grid.Columns.Clear();if(-not $rows.Count){return};$columns=@($rows[0].PSObject.Properties.Name);foreach($name in $columns){[void]$grid.Columns.Add($name,$name)};foreach($item in $rows){$values=@();foreach($name in $columns){$values+=[string]$item.$name};[void]$grid.Rows.Add($values)}}finally{$grid.ResumeLayout()}
 }
@@ -34,7 +34,8 @@ function Sync-LiveGrid($grid,[array]$rows){
     }finally{$grid.ResumeLayout()}
 }
 function Get-SelectedRow($grid){if(-not $grid.CurrentRow -or $grid.CurrentRow.IsNewRow){throw 'Выберите подключение.'};$item=[ordered]@{};foreach($column in $grid.Columns){$item[$column.Name]=[string]$grid.CurrentRow.Cells[$column.Name].Value};return [pscustomobject]$item}
-function Start-LearningFromGrid($grid){$r=Get-SelectedRow $grid;$spec="$($r.Process)|$($r.Domain)|$($r.DestinationIp)|$($r.DestinationPort)|$($r.Protocol)";$tabs.SelectedTab=$learn;&$setLearnStage 'Подготовка профиля и перезапуск выбранного соединения…' 10 $false;[Windows.Forms.Application]::DoEvents();$null=Invoke-Captured{InvokeAdaptiveLearn -Spec $spec};&$refreshLearning}
+function Get-SelectedRows($grid){$items=@();foreach($row in @($grid.SelectedRows)){if($row.IsNewRow){continue};$item=[ordered]@{};foreach($column in $grid.Columns){$item[$column.Name]=[string]$row.Cells[$column.Name].Value};$items+=[pscustomobject]$item};if(-not $items.Count){$items=@(Get-SelectedRow $grid)};return $items}
+function Start-LearningFromGrid($grid){$rows=@(Get-SelectedRows $grid);$targets=@($rows|ForEach-Object{[pscustomobject]@{Process=$_.Process;Domain=$_.Domain;Ip=$_.DestinationIp;Port=[int]$_.DestinationPort;Protocol=$_.Protocol}});$tabs.SelectedTab=$learn;&$setLearnStage ("Подготовка профиля для {0} целей и перезапуск соединений…" -f $targets.Count) 10 $false;[Windows.Forms.Application]::DoEvents();$null=Invoke-Captured{InvokeAdaptiveLearnGroup -Targets $targets};&$refreshLearning}
 
 # Главная
 $dashboard=New-Page $tabs 'Главная'
@@ -63,21 +64,22 @@ New-Button $dashboard 'Полная настройка' 865 295 165 {InvokeAdapt
 # Приложения: живые подключения и история
 $traffic=New-Page $tabs 'Приложения';$appTabs=New-Object Windows.Forms.TabControl;$appTabs.Dock='Fill';$traffic.Controls.Add($appTabs)
 $livePage=New-Page $appTabs 'Сейчас'
-$liveSplit=New-Object Windows.Forms.SplitContainer;$liveSplit.Dock='Fill';$liveSplit.Orientation='Vertical';$liveSplit.SplitterDistance=220;$liveSplit.FixedPanel='Panel1';$liveSplit.Panel1MinSize=170;$livePage.Controls.Add($liveSplit)
+$liveSplit=New-Object Windows.Forms.SplitContainer;$liveSplit.Dock='Fill';$liveSplit.Orientation='Vertical';$liveSplit.SplitterDistance=175;$liveSplit.FixedPanel='Panel1';$liveSplit.Panel1MinSize=145;$livePage.Controls.Add($liveSplit)
 $liveApps=New-Object Windows.Forms.ListBox;$liveApps.Dock='Fill';$liveApps.IntegralHeight=$false;$liveApps.Font=New-Object Drawing.Font('Segoe UI',10);$liveSplit.Panel1.Controls.Add($liveApps)
 $liveGrid=New-Grid;$liveGrid.Dock='Fill';$liveSplit.Panel2.Controls.Add($liveGrid)
-$liveTop=New-Object Windows.Forms.Panel;$liveTop.Dock='Top';$liveTop.Height=54;$livePage.Controls.Add($liveTop);$liveTop.BringToFront()
-$liveStatus=New-Object Windows.Forms.Label;$liveStatus.SetBounds(875,18,170,24);$liveTop.Controls.Add($liveStatus)
+$liveTop=New-Object Windows.Forms.Panel;$liveTop.Dock='Top';$liveTop.Height=92;$livePage.Controls.Add($liveTop);$liveTop.BringToFront()
+$liveStatus=New-Object Windows.Forms.Label;$liveStatus.SetBounds(355,58,650,24);$liveTop.Controls.Add($liveStatus)
 $script:captureActive=$false;$script:captureProcess='';$script:captureBaseline=@{};$script:captureRows=@{};$script:liveRows=@();$script:liveProcessMap=@{};$script:liveGroupsFingerprint=''
 $showLiveSelection={
     $selected=[string]$liveApps.SelectedItem;$process=$(if($selected -and $script:liveProcessMap.ContainsKey($selected)){$script:liveProcessMap[$selected]}else{''})
-    $visible=$(if($process){@($script:liveRows|Where-Object{$_.Process -ieq $process})}else{@($script:liveRows)})
+    $visible=$(if($process -eq 'Steam'){@($script:liveRows|Where-Object{$_.Process -in @('steam','steamwebhelper')})}elseif($process){@($script:liveRows|Where-Object{$_.Process -ieq $process})}else{@($script:liveRows)})
     Sync-LiveGrid $liveGrid $visible
+    if($process -and $liveGrid.Rows.Count){$liveGrid.ClearSelection();$preferred=$(if(@($visible|Where-Object Protocol -eq 'TCP').Count){'TCP'}else{'UDP'});foreach($row in @($liveGrid.Rows)){if(-not $row.IsNewRow -and [string]$row.Cells['Protocol'].Value -eq $preferred){$row.Selected=$true}}}
 }
 $liveApps.Add_SelectedIndexChanged({&$showLiveSelection})
 $refreshLive={try{
     $script:liveRows=@(InvokeAdaptiveLiveConnections)
-    $groups=@($script:liveRows|Group-Object Process|Sort-Object Name);$fingerprint=($groups|ForEach-Object{'{0}:{1}' -f $_.Name,$_.Count}) -join '|'
+    $groups=@($script:liveRows|Group-Object {if($_.Process -in @('steam','steamwebhelper')){'Steam'}else{$_.Process}}|Sort-Object Name);$fingerprint=($groups|ForEach-Object{'{0}:{1}' -f $_.Name,$_.Count}) -join '|'
     if($fingerprint -ne $script:liveGroupsFingerprint){
         $selectedProcess='';$oldSelected=[string]$liveApps.SelectedItem;if($oldSelected -and $script:liveProcessMap.ContainsKey($oldSelected)){$selectedProcess=$script:liveProcessMap[$oldSelected]}
         $liveApps.BeginUpdate();try{$liveApps.Items.Clear();$script:liveProcessMap=@{};$allLabel='Все приложения ({0})' -f $script:liveRows.Count;[void]$liveApps.Items.Add($allLabel);$script:liveProcessMap[$allLabel]='';foreach($group in $groups){$label='{0} ({1})' -f $group.Name,$group.Count;[void]$liveApps.Items.Add($label);$script:liveProcessMap[$label]=[string]$group.Name}}finally{$liveApps.EndUpdate()}
@@ -88,11 +90,14 @@ $refreshLive={try{
     $suffix=$(if($script:captureActive){" · запись: $script:captureProcess ($($script:captureRows.Count))"}else{''});$liveStatus.Text=('Активных/недавних: {0} · {1}{2}' -f $script:liveRows.Count,(Get-Date -Format 'HH:mm:ss'),$suffix)
 }catch{$liveStatus.Text=$_.Exception.Message}}
 New-Button $liveTop 'Обновить сейчас' 10 8 155 $refreshLive|Out-Null
-New-Button $liveTop 'Подобрать zapret' 180 8 170 {Start-LearningFromGrid $liveGrid}|Out-Null
-New-Button $liveTop 'Direct' 365 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode direct}|Out-Null
-New-Button $liveTop 'Block' 470 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode block}|Out-Null
-New-Button $liveTop 'Запись действия' 570 8 150 {$r=Get-SelectedRow $liveGrid;$script:captureProcess=$r.Process;$script:captureBaseline=@{};$script:captureRows=@{};foreach($row in @($script:liveRows)){if($row.Process -ieq $script:captureProcess){$script:captureBaseline['{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol]=$true}};$script:captureActive=$true;$liveStatus.Text="Запись $($script:captureProcess): обновите нужную вкладку"}|Out-Null
-New-Button $liveTop 'Стоп записи' 735 8 130 {$script:captureActive=$false;$captured=@($script:captureRows.Values);if($captured.Count){Sync-LiveGrid $liveGrid $captured;$liveStatus.Text="Новых: $($captured.Count)"}else{$liveStatus.Text='Новых соединений нет'}}|Out-Null
+New-Button $liveTop 'Подобрать выбранные' 180 8 190 {Start-LearningFromGrid $liveGrid}|Out-Null
+New-Button $liveTop 'Direct' 385 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode direct}|Out-Null
+New-Button $liveTop 'Block' 490 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode block}|Out-Null
+New-Button $liveTop 'Запись действия' 595 8 150 {$r=Get-SelectedRow $liveGrid;$script:captureProcess=$r.Process;$script:captureBaseline=@{};$script:captureRows=@{};foreach($row in @($script:liveRows)){if($row.Process -ieq $script:captureProcess){$script:captureBaseline['{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol]=$true}};$script:captureActive=$true;$liveStatus.Text="Запись $($script:captureProcess): обновите нужную вкладку"}|Out-Null
+New-Button $liveTop 'Стоп записи' 760 8 130 {$script:captureActive=$false;$captured=@($script:captureRows.Values);if($captured.Count){Sync-LiveGrid $liveGrid $captured;$liveStatus.Text="Новых: $($captured.Count)"}else{$liveStatus.Text='Новых соединений нет'}}|Out-Null
+New-Button $liveTop 'Все TCP' 10 50 100 {$liveGrid.ClearSelection();foreach($row in @($liveGrid.Rows)){if(-not $row.IsNewRow -and [string]$row.Cells['Protocol'].Value -eq 'TCP'){$row.Selected=$true}}}|Out-Null
+New-Button $liveTop 'Все UDP' 120 50 100 {$liveGrid.ClearSelection();foreach($row in @($liveGrid.Rows)){if(-not $row.IsNewRow -and [string]$row.Cells['Protocol'].Value -eq 'UDP'){$row.Selected=$true}}}|Out-Null
+New-Button $liveTop 'Снять выбор' 230 50 110 {$liveGrid.ClearSelection()}|Out-Null
 
 $historyPage=New-Page $appTabs 'История';$historyGrid=New-Grid;$historyGrid.Dock='Fill';$historyPage.Controls.Add($historyGrid)
 $historyTop=New-Object Windows.Forms.Panel;$historyTop.Dock='Top';$historyTop.Height=54;$historyPage.Controls.Add($historyTop);$historyTop.BringToFront()

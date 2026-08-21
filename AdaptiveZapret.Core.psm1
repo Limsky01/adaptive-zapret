@@ -472,13 +472,14 @@ function InvokeAdaptiveLearn([string]$Spec) {
     if ($parts.Count -lt 5) { throw 'Формат: Process|Domain|IP|Port|Protocol' }
     Start-AdaptiveLearning -ProcessName $parts[0] -Domain $parts[1] -Ip $parts[2] -Port ([int]$parts[3]) -Protocol $parts[4]
 }
+function InvokeAdaptiveLearnGroup([array]$Targets) { Start-AdaptiveLearningGroup -Targets $Targets }
 function InvokeAdaptiveTest([string]$Result) { Submit-AdaptiveLearningResult -Result $Result }
 function InvokeAdaptiveLearningStatus {
     $path=Join-Path $Root 'data\learning.json'
     if(-not (Test-Path -LiteralPath $path)){return [pscustomobject]@{Active=$false;Index=0;Total=0;Profile='';Process='';Target='';Protocol='';Passes=0;PassesRequired=0}}
     $session=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json;$index=[int]$session.Index;$candidates=@($session.Candidates)
-    $profile=$(if($index -ge 0 -and $index -lt $candidates.Count){[string]$candidates[$index]}else{''});$target=$(if($session.Domain){[string]$session.Domain}else{[string]$session.Ip})
-    [pscustomobject]@{Active=$true;Index=($index+1);Total=$candidates.Count;Profile=$profile;Process=[string]$session.Process;Target=("{0}:{1}" -f $target,$session.Port);Protocol=[string]$session.Protocol;Passes=[int]$session.ConsecutivePasses;PassesRequired=[int]$session.PassesRequired}
+    $profile=$(if($index -ge 0 -and $index -lt $candidates.Count){[string]$candidates[$index]}else{''});$target=$(if($session.Targets){"$(@($session.Targets).Count) целей"}elseif($session.Domain){[string]$session.Domain}else{[string]$session.Ip})
+    [pscustomobject]@{Active=$true;Index=($index+1);Total=$candidates.Count;Profile=$profile;Process=[string]$session.Process;Target=$(if($session.Targets){$target}else{"{0}:{1}" -f $target,$session.Port});Protocol=[string]$session.Protocol;Passes=[int]$session.ConsecutivePasses;PassesRequired=[int]$session.PassesRequired}
 }
 function InvokeAdaptiveLearningCancel {
     $path=Join-Path $Root 'data\learning.json'

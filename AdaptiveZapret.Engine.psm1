@@ -353,11 +353,30 @@ function Start-AdaptiveLearning([string]$ProcessName,[string]$Domain='',[string]
     Write-Host "Попытка 1/$($candidates.Count). Проверьте подключение, затем: test pass или test fail" -ForegroundColor Cyan
 }
 
+function Start-AdaptiveLearningGroup([array]$Targets) {
+    $targets=@($Targets);if(-not $targets.Count){throw 'Не выбрано ни одной цели.'}
+    $protocols=@($targets|ForEach-Object{([string]$_.Protocol).ToUpperInvariant()}|Sort-Object -Unique);if($protocols.Count -ne 1){throw 'Один тест может включать только TCP-цели или только UDP-цели.'}
+    $processes=@($targets|ForEach-Object{$_.Process}|Sort-Object -Unique)
+    foreach($target in $targets){Test-AdaptiveSafeTarget $target.Process $target.Domain $target.Ip ([int]$target.Port)}
+    $protocol=$protocols[0];$catalog=Read-AdaptiveJson $Script:StrategiesFile $null;$candidates=@($catalog.Profiles|Where-Object{$_.Protocol -eq $protocol}|Select-Object -ExpandProperty Id)
+    if(-not $candidates.Count){throw "Нет профилей для $protocol"};$max=[Math]::Max(1,[int](Get-AdaptiveSettings).MaxAttemptsPerSession);$candidates=@($candidates|Select-Object -First $max)
+    $session=[ordered]@{Process=($processes -join ', ');Targets=$targets;Protocol=$protocol;Candidates=$candidates;Index=0;ConsecutivePasses=0;PassesRequired=2;Results=@();StartedUtc=[DateTime]::UtcNow.ToString('o')}
+    Write-AdaptiveJson $Script:LearningFile $session;Start-AdaptiveLearningGroupProfile -Targets $targets -ProfileId $candidates[0]
+    Write-Host "Попытка 1/$($candidates.Count): $($targets.Count) целей." -ForegroundColor Cyan
+}
+
+function Start-AdaptiveLearningGroupProfile([array]$Targets,[string]$ProfileId) {
+    $rules=@($Targets|ForEach-Object{[pscustomobject]@{Process=$_.Process;Domain=$_.Domain;Ip=$_.Ip;Port=[int]$_.Port;Protocol=$_.Protocol;Strategy=$ProfileId}})
+    Start-AdaptiveRuleSet $rules
+    if($rules[0].Protocol -eq 'TCP'){foreach($rule in $rules){Restart-AdaptiveTargetConnection -Rule $rule -DelaySeconds 0};Write-Host 'Все выбранные TCP-соединения закрыты. Ожидание: 5 сек.' -ForegroundColor Cyan;Start-Sleep -Seconds 5}else{Write-Host 'UDP-профиль применён ко всей выбранной группе.' -ForegroundColor Cyan}
+}
+
 function Submit-AdaptiveLearningResult([ValidateSet('pass','fail','skip')][string]$Result) {
     $session = Read-AdaptiveJson $Script:LearningFile $null
     if (-not $session) { throw 'Активного подбора нет. Запустите learn <процесс>.' }
     $current = [string]$session.Candidates[[int]$session.Index]
-    $resultRow=[pscustomobject]@{ Process=$session.Process; Domain=$session.Domain; Ip=$session.Ip; Port=$session.Port; Protocol=$session.Protocol; Strategy=$current; Result=$Result; TimeUtc=[DateTime]::UtcNow.ToString('o') }
+    $targets=$(if($session.Targets){@($session.Targets)}else{@([pscustomobject]@{Process=$session.Process;Domain=$session.Domain;Ip=$session.Ip;Port=$session.Port;Protocol=$session.Protocol})})
+    $resultRow=[pscustomobject]@{ Process=$session.Process; Targets=$targets.Count; Strategy=$current; Result=$Result; TimeUtc=[DateTime]::UtcNow.ToString('o') }
     $session.Results = @($session.Results) + $resultRow
     Add-Content -LiteralPath $Script:StrategyHistoryFile -Value ($resultRow|ConvertTo-Json -Compress) -Encoding UTF8
     if ($Result -eq 'pass') {
@@ -367,7 +386,7 @@ function Submit-AdaptiveLearningResult([ValidateSet('pass','fail','skip')][strin
             Write-Host "Первый успех отмечен. Повторите подключение с тем же профилем и снова выполните test pass/fail." -ForegroundColor Cyan
             return
         }
-        Add-AdaptiveRule -Process $session.Process -Domain $session.Domain -Ip $session.Ip -Port ([int]$session.Port) -Protocol $session.Protocol -Mode zapret -Strategy $current
+        foreach($target in $targets){Add-AdaptiveRule -Process $target.Process -Domain $target.Domain -Ip $target.Ip -Port ([int]$target.Port) -Protocol $target.Protocol -Mode zapret -Strategy $current}
         Remove-Item -LiteralPath $Script:LearningFile -Force
         Write-Host "Рабочая стратегия сохранена: $current. Она уже активна." -ForegroundColor Green
         return
@@ -382,9 +401,8 @@ function Submit-AdaptiveLearningResult([ValidateSet('pass','fail','skip')][strin
         return
     }
     Write-AdaptiveJson $Script:LearningFile $session
-    $rule = [pscustomobject]@{ Process=$session.Process; Domain=$session.Domain; Ip=$session.Ip; Port=[int]$session.Port; Protocol=$session.Protocol }
     $next = [string]$session.Candidates[[int]$session.Index]
-    Start-AdaptiveProfile $rule $next
+    if($session.Targets){Start-AdaptiveLearningGroupProfile -Targets $targets -ProfileId $next}else{$rule=[pscustomobject]@{Process=$session.Process;Domain=$session.Domain;Ip=$session.Ip;Port=[int]$session.Port;Protocol=$session.Protocol};Start-AdaptiveProfile $rule $next}
     Write-Host "Попытка $([int]$session.Index + 1)/$(@($session.Candidates).Count): $next. Затем test pass или test fail" -ForegroundColor Cyan
 }
 
