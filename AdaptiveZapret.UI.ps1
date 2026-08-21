@@ -34,7 +34,7 @@ function Sync-LiveGrid($grid,[array]$rows){
     }finally{$grid.ResumeLayout()}
 }
 function Get-SelectedRow($grid){if(-not $grid.CurrentRow -or $grid.CurrentRow.IsNewRow){throw 'Выберите подключение.'};$item=[ordered]@{};foreach($column in $grid.Columns){$item[$column.Name]=[string]$grid.CurrentRow.Cells[$column.Name].Value};return [pscustomobject]$item}
-function Start-LearningFromGrid($grid){$r=Get-SelectedRow $grid;$spec="$($r.Process)|$($r.Domain)|$($r.DestinationIp)|$($r.DestinationPort)|$($r.Protocol)";$result=Invoke-Captured{InvokeAdaptiveLearn -Spec $spec};$tabs.SelectedTab=$learn;[Windows.Forms.MessageBox]::Show(($result+"`r`n`r`nСоединение перезапущено. Проверьте вход в сессию."),'Adaptive Zapret')|Out-Null}
+function Start-LearningFromGrid($grid){$r=Get-SelectedRow $grid;$spec="$($r.Process)|$($r.Domain)|$($r.DestinationIp)|$($r.DestinationPort)|$($r.Protocol)";$tabs.SelectedTab=$learn;&$setLearnStage 'Подготовка профиля и перезапуск выбранного соединения…' 10 $false;[Windows.Forms.Application]::DoEvents();$null=Invoke-Captured{InvokeAdaptiveLearn -Spec $spec};&$refreshLearning}
 
 # Главная
 $dashboard=New-Page $tabs 'Главная'
@@ -110,11 +110,16 @@ New-Button $rulesTop 'Применить правила' 335 8 170 {InvokeAdapti
 New-Button $rulesTop 'Экспорт AUTO' 520 8 150 {InvokeAdaptiveExport}|Out-Null
 New-Button $rulesTop 'Автозапуск' 685 8 130 {InvokeAdaptiveAutoStartOn}|Out-Null
 
-$learn=New-Page $tabs 'Подбор';$learnText=New-Object Windows.Forms.Label;$learnText.SetBounds(25,25,980,115);$learnText.AutoSize=$false;$learnText.Text='При запуске профиля выбранное соединение автоматически закрывается, через 5 секунд программа проверяет повторное подключение. Проверьте вход в игровую сессию и отметьте результат.';$learn.Controls.Add($learnText)
-New-Button $learn 'Работает' 25 165 180 {[Windows.Forms.MessageBox]::Show((Invoke-Captured{InvokeAdaptiveTest pass}),'Adaptive Zapret')|Out-Null}|Out-Null
-New-Button $learn 'Не работает — следующая' 220 165 230 {[Windows.Forms.MessageBox]::Show((Invoke-Captured{InvokeAdaptiveTest fail}),'Adaptive Zapret')|Out-Null}|Out-Null
-New-Button $learn 'Пропустить профиль' 465 165 200 {[Windows.Forms.MessageBox]::Show((Invoke-Captured{InvokeAdaptiveTest skip}),'Adaptive Zapret')|Out-Null}|Out-Null
-New-Button $learn 'Отмена и direct' 680 165 180 {InvokeAdaptiveDirect}|Out-Null
+$learn=New-Page $tabs 'Подбор'
+$learnTitle=New-Object Windows.Forms.Label;$learnTitle.SetBounds(25,25,980,36);$learnTitle.Font=New-Object Drawing.Font('Segoe UI',14,[Drawing.FontStyle]::Bold);$learnTitle.Text='Подбор не запущен';$learn.Controls.Add($learnTitle)
+$learnDetail=New-Object Windows.Forms.Label;$learnDetail.SetBounds(25,70,980,65);$learnDetail.AutoSize=$false;$learnDetail.ForeColor=[Drawing.Color]::DimGray;$learn.Controls.Add($learnDetail)
+$learnProgress=New-Object Windows.Forms.ProgressBar;$learnProgress.SetBounds(25,145,980,24);$learnProgress.Minimum=0;$learnProgress.Maximum=100;$learn.Controls.Add($learnProgress)
+$learnStage=New-Object Windows.Forms.Label;$learnStage.SetBounds(25,180,980,55);$learnStage.AutoSize=$false;$learnStage.Text='Выберите подключение во вкладке «Приложения» и нажмите «Подобрать zapret».';$learn.Controls.Add($learnStage)
+$learnPass=New-Button $learn 'Работает' 25 255 180 {};$learnFail=New-Button $learn 'Не работает — следующая' 220 255 230 {};$learnSkip=New-Button $learn 'Пропустить профиль' 465 255 200 {};$learnCancel=New-Button $learn 'Отмена и direct' 680 255 180 {}
+$setLearnStage={param([string]$text,[int]$progress,[bool]$waiting)$learnStage.Text=$text;$learnProgress.Value=[Math]::Max(0,[Math]::Min(100,$progress));$learnPass.Enabled=$waiting;$learnFail.Enabled=$waiting;$learnSkip.Enabled=$waiting}
+$refreshLearning={$state=InvokeAdaptiveLearningStatus;if(-not $state.Active){$learnTitle.Text='Подбор не запущен';$learnDetail.Text='';&$setLearnStage 'Выберите подключение во вкладке «Приложения» и нажмите «Подобрать zapret».' 0 $false;return};$percent=[int](($state.Index-1)*100/[Math]::Max(1,$state.Total));$learnTitle.Text=('Профиль {0}/{1}: {2}' -f $state.Index,$state.Total,$state.Profile);$learnDetail.Text=('Приложение: {0}    Цель: {1}/{2}`r`nУспешных проверок: {3}/{4}' -f $state.Process,$state.Target,$state.Protocol,$state.Passes,$state.PassesRequired);&$setLearnStage ('Ожидание результата для профиля «{0}» (№ {1} из {2}). Проверьте подключение и отметьте результат.' -f $state.Profile,$state.Index,$state.Total) $percent $true}
+$submitLearning={param([string]$result)&$setLearnStage 'Сохраняю результат, переключаю профиль и перезапускаю соединение…' $learnProgress.Value $false;[Windows.Forms.Application]::DoEvents();$output=Invoke-Captured{InvokeAdaptiveTest $result};&$refreshLearning;if(-not (InvokeAdaptiveLearningStatus).Active){$learnStage.Text=$output;$learnProgress.Value=100}}
+$learnPass.Add_Click({&$submitLearning 'pass'});$learnFail.Add_Click({&$submitLearning 'fail'});$learnSkip.Add_Click({&$submitLearning 'skip'});$learnCancel.Add_Click({InvokeAdaptiveLearningCancel;&$refreshLearning;$learnStage.Text='Подбор отменён. Сеть возвращена в direct.'})
 
 # Дополнительно: диагностика и обновления
 $extra=New-Page $tabs 'Дополнительно';$extraTabs=New-Object Windows.Forms.TabControl;$extraTabs.Dock='Fill';$extra.Controls.Add($extraTabs)
@@ -128,6 +133,6 @@ New-Button $update 'Установить ZIP вручную' 260 165 220 {$dialo
 
 $liveRefreshBusy=$false
 $liveTimer=New-Object Windows.Forms.Timer;$liveTimer.Interval=1000;$liveTimer.Add_Tick({if(-not $liveRefreshBusy -and $tabs.SelectedTab -eq $traffic -and $appTabs.SelectedTab -eq $livePage){$liveRefreshBusy=$true;try{&$refreshLive}finally{$liveRefreshBusy=$false}}})
-$form.Add_Shown({try{&$refreshStatus;&$loadRules;&$refreshLive;$updateState=InvokeAdaptiveUpdateStatus;$updateInfo.Text=("Установлена версия: {0}`r`nКанал обновлений:" -f $updateState.CurrentVersion);$updateUrl.Text=$updateState.ManifestUrl;$liveTimer.Start();Add-Content $startupLog ("{0} UI ready" -f [DateTime]::Now.ToString('s')) -Encoding UTF8}catch{$details=$_|Out-String;Add-Content $startupLog $details -Encoding UTF8;[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Adaptive Zapret — ошибка запуска','OK','Error')|Out-Null}})
+$form.Add_Shown({try{&$refreshStatus;&$loadRules;&$refreshLive;&$refreshLearning;$updateState=InvokeAdaptiveUpdateStatus;$updateInfo.Text=("Установлена версия: {0}`r`nКанал обновлений:" -f $updateState.CurrentVersion);$updateUrl.Text=$updateState.ManifestUrl;$liveTimer.Start();Add-Content $startupLog ("{0} UI ready" -f [DateTime]::Now.ToString('s')) -Encoding UTF8}catch{$details=$_|Out-String;Add-Content $startupLog $details -Encoding UTF8;[Windows.Forms.MessageBox]::Show($_.Exception.Message,'Adaptive Zapret — ошибка запуска','OK','Error')|Out-Null}})
 $form.Add_FormClosed({$liveTimer.Stop();$liveTimer.Dispose()})
 [void]$form.ShowDialog()
