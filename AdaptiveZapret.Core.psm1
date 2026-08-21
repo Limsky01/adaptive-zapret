@@ -15,7 +15,7 @@ $MapFile = Join-Path $DataDir 'traffic-map.csv'
 $AppsFile = Join-Path $DataDir 'apps-map.csv'
 $CollectorPidFile = Join-Path $DataDir 'collector.pid'
 $SysmonLog = 'Microsoft-Windows-Sysmon/Operational'
-$Version = '1.2.3'
+$Version = '1.2.4'
 
 New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
 

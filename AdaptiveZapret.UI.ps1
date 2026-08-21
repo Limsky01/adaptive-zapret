@@ -62,17 +62,37 @@ New-Button $dashboard 'Полная настройка' 865 295 165 {InvokeAdapt
 
 # Приложения: живые подключения и история
 $traffic=New-Page $tabs 'Приложения';$appTabs=New-Object Windows.Forms.TabControl;$appTabs.Dock='Fill';$traffic.Controls.Add($appTabs)
-$livePage=New-Page $appTabs 'Сейчас';$liveGrid=New-Grid;$liveGrid.Dock='Fill';$livePage.Controls.Add($liveGrid)
+$livePage=New-Page $appTabs 'Сейчас'
+$liveSplit=New-Object Windows.Forms.SplitContainer;$liveSplit.Dock='Fill';$liveSplit.Orientation='Vertical';$liveSplit.SplitterDistance=220;$liveSplit.FixedPanel='Panel1';$liveSplit.Panel1MinSize=170;$livePage.Controls.Add($liveSplit)
+$liveApps=New-Object Windows.Forms.ListBox;$liveApps.Dock='Fill';$liveApps.IntegralHeight=$false;$liveApps.Font=New-Object Drawing.Font('Segoe UI',10);$liveSplit.Panel1.Controls.Add($liveApps)
+$liveGrid=New-Grid;$liveGrid.Dock='Fill';$liveSplit.Panel2.Controls.Add($liveGrid)
 $liveTop=New-Object Windows.Forms.Panel;$liveTop.Dock='Top';$liveTop.Height=54;$livePage.Controls.Add($liveTop);$liveTop.BringToFront()
 $liveStatus=New-Object Windows.Forms.Label;$liveStatus.SetBounds(875,18,170,24);$liveTop.Controls.Add($liveStatus)
-$captureActive=$false;$captureProcess='';$captureBaseline=@{};$captureRows=@{}
-$refreshLive={try{$rows=@(InvokeAdaptiveLiveConnections);Sync-LiveGrid $liveGrid $rows;if($captureActive){foreach($row in $rows){if($row.Process -ieq $captureProcess){$key='{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol;if(-not $captureBaseline.ContainsKey($key)){$captureRows[$key]=$row}}}};$suffix=$(if($captureActive){" · запись: $captureProcess ($($captureRows.Count))"}else{''});$liveStatus.Text=('Активных/недавних: {0} · {1}{2}' -f $rows.Count,(Get-Date -Format 'HH:mm:ss'),$suffix)}catch{$liveStatus.Text=$_.Exception.Message}}
+$script:captureActive=$false;$script:captureProcess='';$script:captureBaseline=@{};$script:captureRows=@{};$script:liveRows=@();$script:liveProcessMap=@{};$script:liveGroupsFingerprint=''
+$showLiveSelection={
+    $selected=[string]$liveApps.SelectedItem;$process=$(if($selected -and $script:liveProcessMap.ContainsKey($selected)){$script:liveProcessMap[$selected]}else{''})
+    $visible=$(if($process){@($script:liveRows|Where-Object{$_.Process -ieq $process})}else{@($script:liveRows)})
+    Sync-LiveGrid $liveGrid $visible
+}
+$liveApps.Add_SelectedIndexChanged({&$showLiveSelection})
+$refreshLive={try{
+    $script:liveRows=@(InvokeAdaptiveLiveConnections)
+    $groups=@($script:liveRows|Group-Object Process|Sort-Object Name);$fingerprint=($groups|ForEach-Object{'{0}:{1}' -f $_.Name,$_.Count}) -join '|'
+    if($fingerprint -ne $script:liveGroupsFingerprint){
+        $selectedProcess='';$oldSelected=[string]$liveApps.SelectedItem;if($oldSelected -and $script:liveProcessMap.ContainsKey($oldSelected)){$selectedProcess=$script:liveProcessMap[$oldSelected]}
+        $liveApps.BeginUpdate();try{$liveApps.Items.Clear();$script:liveProcessMap=@{};$allLabel='Все приложения ({0})' -f $script:liveRows.Count;[void]$liveApps.Items.Add($allLabel);$script:liveProcessMap[$allLabel]='';foreach($group in $groups){$label='{0} ({1})' -f $group.Name,$group.Count;[void]$liveApps.Items.Add($label);$script:liveProcessMap[$label]=[string]$group.Name}}finally{$liveApps.EndUpdate()}
+        $target=0;if($selectedProcess){for($i=1;$i-lt$liveApps.Items.Count;$i++){if($script:liveProcessMap[[string]$liveApps.Items[$i]] -ieq $selectedProcess){$target=$i;break}}};$liveApps.SelectedIndex=$target;$script:liveGroupsFingerprint=$fingerprint
+    }
+    &$showLiveSelection
+    if($script:captureActive){foreach($row in $script:liveRows){if($row.Process -ieq $script:captureProcess){$key='{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol;if(-not $script:captureBaseline.ContainsKey($key)){$script:captureRows[$key]=$row}}}}
+    $suffix=$(if($script:captureActive){" · запись: $script:captureProcess ($($script:captureRows.Count))"}else{''});$liveStatus.Text=('Активных/недавних: {0} · {1}{2}' -f $script:liveRows.Count,(Get-Date -Format 'HH:mm:ss'),$suffix)
+}catch{$liveStatus.Text=$_.Exception.Message}}
 New-Button $liveTop 'Обновить сейчас' 10 8 155 $refreshLive|Out-Null
 New-Button $liveTop 'Подобрать zapret' 180 8 170 {Start-LearningFromGrid $liveGrid}|Out-Null
 New-Button $liveTop 'Direct' 365 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode direct}|Out-Null
 New-Button $liveTop 'Block' 470 8 90 {$r=Get-SelectedRow $liveGrid;InvokeAdaptiveRuleCreate -Process $r.Process -Domain $r.Domain -Ip $r.DestinationIp -Port([int]$r.DestinationPort)-Protocol $r.Protocol -Mode block}|Out-Null
-New-Button $liveTop 'Запись действия' 570 8 150 {$r=Get-SelectedRow $liveGrid;$captureProcess=$r.Process;$captureBaseline=@{};$captureRows=@{};foreach($row in @(InvokeAdaptiveLiveConnections)){if($row.Process -ieq $captureProcess){$captureBaseline['{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol]=$true}};$captureActive=$true;$liveStatus.Text="Запись ${captureProcess}: обновите нужную вкладку"}|Out-Null
-New-Button $liveTop 'Стоп записи' 735 8 130 {$captureActive=$false;$captured=@($captureRows.Values);if($captured.Count){Sync-LiveGrid $liveGrid $captured;$liveStatus.Text="Новых: $($captured.Count)"}else{$liveStatus.Text='Новых соединений нет'}}|Out-Null
+New-Button $liveTop 'Запись действия' 570 8 150 {$r=Get-SelectedRow $liveGrid;$script:captureProcess=$r.Process;$script:captureBaseline=@{};$script:captureRows=@{};foreach($row in @($script:liveRows)){if($row.Process -ieq $script:captureProcess){$script:captureBaseline['{0}|{1}|{2}|{3}' -f $row.Process,$row.DestinationIp,$row.DestinationPort,$row.Protocol]=$true}};$script:captureActive=$true;$liveStatus.Text="Запись $($script:captureProcess): обновите нужную вкладку"}|Out-Null
+New-Button $liveTop 'Стоп записи' 735 8 130 {$script:captureActive=$false;$captured=@($script:captureRows.Values);if($captured.Count){Sync-LiveGrid $liveGrid $captured;$liveStatus.Text="Новых: $($captured.Count)"}else{$liveStatus.Text='Новых соединений нет'}}|Out-Null
 
 $historyPage=New-Page $appTabs 'История';$historyGrid=New-Grid;$historyGrid.Dock='Fill';$historyPage.Controls.Add($historyGrid)
 $historyTop=New-Object Windows.Forms.Panel;$historyTop.Dock='Top';$historyTop.Height=54;$historyPage.Controls.Add($historyTop);$historyTop.BringToFront()
