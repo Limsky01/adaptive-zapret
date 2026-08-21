@@ -9,6 +9,9 @@ try {
     $ui=Get-Content -LiteralPath (Join-Path $root 'AdaptiveZapret.UI.ps1') -Raw
     if($ui -notmatch 'GetNewClosure'){throw 'UI event handler closure guard missing'}
     if($ui -notmatch 'Проверить и обновить'){throw 'Update UI missing'}
+    foreach($feature in @("New-Page `$tabs 'Дополнительно'","New-Page `$appTabs 'Сейчас'","New-Page `$appTabs 'История'",'InvokeAdaptiveLiveConnections')){if($ui -notmatch [regex]::Escape($feature)){throw "UI feature missing: $feature"}}
+    $engineText=Get-Content $engineModule -Raw
+    foreach($feature in @('SetTcpEntry','Restart-AdaptiveTargetConnection','temporary reconnect')){if($engineText -notmatch $feature){throw "Reconnect feature missing: $feature"}}
     $updater=Join-Path $root 'AdaptiveZapret.Updater.ps1'
     if(-not(Test-Path $updater)){throw 'Updater missing'}
     $updaterText=Get-Content $updater -Raw

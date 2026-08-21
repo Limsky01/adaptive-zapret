@@ -155,12 +155,65 @@ function Get-AdaptiveProfile([string]$Id) {
     return @($catalog.Profiles | Where-Object { $_.Id -eq $Id }) | Select-Object -First 1
 }
 
-function Assert-AdaptiveTargetIdle([object]$Rule) {
-    if($Rule.Protocol -ne 'TCP' -or -not $Rule.Ip){return}
-    $pids=@(Get-Process -Name $Rule.Process -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
-    if(-not $pids.Count){return}
-    $active=@(Get-NetTCPConnection -RemoteAddress $Rule.Ip -RemotePort ([int]$Rule.Port) -State Established -ErrorAction SilentlyContinue | Where-Object {$pids -contains $_.OwningProcess})
-    if($active.Count){throw "Соединение $($Rule.Ip):$($Rule.Port) ещё активно. Выйдите из текущей попытки/закройте сессию и повторите команду результата."}
+function Initialize-AdaptiveTcpResetApi {
+    if('AdaptiveTcpReset' -as [type]){return}
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AdaptiveTcpReset {
+  [StructLayout(LayoutKind.Sequential)] public struct MIB_TCPROW {
+    public uint state, localAddr, localPort, remoteAddr, remotePort;
+  }
+  [DllImport("iphlpapi.dll", SetLastError=true)] public static extern uint SetTcpEntry(ref MIB_TCPROW row);
+}
+'@
+}
+
+function Convert-AdaptiveTcpAddress([string]$Address){
+    return [BitConverter]::ToUInt32([Net.IPAddress]::Parse($Address).GetAddressBytes(),0)
+}
+
+function Convert-AdaptiveTcpPort([int]$Port){
+    return [BitConverter]::ToUInt32([byte[]]@([byte]($Port-shr 8),[byte]($Port-band 255),0,0),0)
+}
+
+function Restart-AdaptiveTargetConnection([object]$Rule,[int]$DelaySeconds=5) {
+    $pids=@(Get-Process -Name $Rule.Process -ErrorAction SilentlyContinue|Select-Object -ExpandProperty Id)
+    if(-not $pids.Count){Write-Host "Процесс $($Rule.Process) сейчас не запущен." -ForegroundColor Yellow;return}
+    if($Rule.Protocol -eq 'TCP'){
+        if(-not $Rule.Ip -or $Rule.Ip -match ':'){Write-Host 'Автосброс TCP пока поддерживает точный IPv4-адрес.' -ForegroundColor Yellow;return}
+        $connections=@(Get-NetTCPConnection -RemoteAddress $Rule.Ip -RemotePort ([int]$Rule.Port) -ErrorAction SilentlyContinue|Where-Object{$pids -contains $_.OwningProcess})
+        if(-not $connections.Count){Write-Host 'Активное TCP-соединение не найдено; следующая попытка сразу пойдёт через новый профиль.' -ForegroundColor Yellow;return}
+        Initialize-AdaptiveTcpResetApi
+        $closed=0
+        foreach($connection in $connections){
+            if($connection.LocalAddress -match ':'){continue}
+            $row=New-Object AdaptiveTcpReset+MIB_TCPROW
+            $row.state=12
+            $row.localAddr=Convert-AdaptiveTcpAddress $connection.LocalAddress
+            $row.localPort=Convert-AdaptiveTcpPort ([int]$connection.LocalPort)
+            $row.remoteAddr=Convert-AdaptiveTcpAddress $connection.RemoteAddress
+            $row.remotePort=Convert-AdaptiveTcpPort ([int]$connection.RemotePort)
+            if([AdaptiveTcpReset]::SetTcpEntry([ref]$row) -eq 0){$closed++}
+        }
+        Write-Host "Закрыто TCP-соединений: $closed. Ожидание повторного подключения: $DelaySeconds сек." -ForegroundColor Cyan
+        Start-Sleep -Seconds $DelaySeconds
+        $reconnected=@(Get-NetTCPConnection -RemoteAddress $Rule.Ip -RemotePort ([int]$Rule.Port) -State Established -ErrorAction SilentlyContinue|Where-Object{$pids -contains $_.OwningProcess}).Count -gt 0
+        Write-Host $(if($reconnected){'Повторное TCP-подключение обнаружено.'}else{'Повторное подключение пока не обнаружено; игра может ждать следующей попытки.'}) -ForegroundColor $(if($reconnected){'Green'}else{'Yellow'})
+        return
+    }
+    if($Rule.Protocol -eq 'UDP'){
+        if(-not $Rule.Ip){Write-Host 'Для перезапуска UDP нужен точный IP.' -ForegroundColor Yellow;return}
+        $process=Get-Process -Name $Rule.Process -ErrorAction SilentlyContinue|Select-Object -First 1
+        if(-not $process.Path){Write-Host 'Не найден путь процесса для временного UDP-правила.' -ForegroundColor Yellow;return}
+        $name="$Script:FirewallPrefix temporary reconnect"
+        try{
+            New-NetFirewallRule -DisplayName $name -Direction Outbound -Action Block -Program $process.Path -Protocol UDP -RemoteAddress $Rule.Ip -RemotePort ([int]$Rule.Port)|Out-Null
+            Write-Host "UDP-цель заблокирована на $DelaySeconds сек. для принудительной новой попытки." -ForegroundColor Cyan
+            Start-Sleep -Seconds $DelaySeconds
+        }finally{Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue|Remove-NetFirewallRule -ErrorAction SilentlyContinue}
+        Write-Host 'Временная UDP-блокировка снята.' -ForegroundColor Green
+    }
 }
 
 function Start-AdaptiveProfile([object]$Rule,[string]$ProfileId) {
@@ -169,7 +222,6 @@ function Start-AdaptiveProfile([object]$Rule,[string]$ProfileId) {
     $profile = Get-AdaptiveProfile $ProfileId
     if (-not $profile) { throw "Профиль не найден: $ProfileId" }
     if ($profile.Protocol -ne $Rule.Protocol) { throw "Профиль $ProfileId не подходит для $($Rule.Protocol)." }
-    Assert-AdaptiveTargetIdle $Rule
     Stop-AdaptiveEngine | Out-Null
     $portFilter = if ($Rule.Protocol -eq 'TCP') { "--wf-tcp=$($Rule.Port)" } else { "--wf-udp=$($Rule.Port)" }
     $profileFilter = if ($Rule.Protocol -eq 'TCP') { "--filter-tcp=$($Rule.Port)" } else { "--filter-udp=$($Rule.Port)" }
@@ -182,6 +234,7 @@ function Start-AdaptiveProfile([object]$Rule,[string]$ProfileId) {
     Start-Sleep -Milliseconds 700
     if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) { throw "winws завершился. Проверьте $Script:EngineErrorLog" }
     Write-Host "Профиль $ProfileId запущен для $($Rule.Domain)$($Rule.Ip):$($Rule.Port)/$($Rule.Protocol), PID $($process.Id)" -ForegroundColor Green
+    Restart-AdaptiveTargetConnection -Rule $Rule -DelaySeconds 5
 }
 
 function Start-AdaptiveRuleSet([array]$Rules) {
