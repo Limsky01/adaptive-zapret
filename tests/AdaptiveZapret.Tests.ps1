@@ -11,7 +11,11 @@ try {
     if($ui -notmatch 'Проверить и обновить'){throw 'Update UI missing'}
     foreach($feature in @("New-Page `$tabs 'Дополнительно'","New-Page `$appTabs 'Сейчас'","New-Page `$appTabs 'История'",'InvokeAdaptiveLiveConnections')){if($ui -notmatch [regex]::Escape($feature)){throw "UI feature missing: $feature"}}
     $engineText=Get-Content $engineModule -Raw
-    foreach($feature in @('SetTcpEntry','Restart-AdaptiveTargetConnection','temporary reconnect')){if($engineText -notmatch $feature){throw "Reconnect feature missing: $feature"}}
+    foreach($feature in @('SetTcpEntry','Restart-AdaptiveTargetConnection','temporary reconnect','Get-AdaptiveFlowsealStrategies','Get-AdaptiveFlowsealCommand','winws-debug.log','EvidenceBaselineBytes')){if($engineText -notmatch $feature){throw "Engine feature missing: $feature"}}
+    if($engineText -match "Id='multisplit-1'"){throw 'Legacy synthetic strategy catalog is still embedded'}
+    $coreText=Get-Content (Join-Path $root 'AdaptiveZapret.Core.psm1') -Raw
+    if($coreText -match 'return \[string\]\$Connection\.DestinationHostname'){throw 'PTR hostname must not be used as TLS/DNS name'}
+    foreach($feature in @('InvokeAdaptiveScenarioConnections','DomainSource')){if($coreText -notmatch $feature){throw "Scenario identity feature missing: $feature"}}
     $updater=Join-Path $root 'AdaptiveZapret.Updater.ps1'
     if(-not(Test-Path $updater)){throw 'Updater missing'}
     $updaterText=Get-Content $updater -Raw

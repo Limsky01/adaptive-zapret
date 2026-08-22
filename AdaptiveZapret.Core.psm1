@@ -177,9 +177,10 @@ function Read-JsonLines([string]$Path) {
 }
 
 function Resolve-DomainForConnection($Connection, [array]$DnsEvents, [int]$WindowSeconds) {
-    if ($Connection.DestinationHostname -and $Connection.DestinationHostname -ne '-') {
-        return [string]$Connection.DestinationHostname
-    }
+    # Sysmon DestinationHostname is commonly reverse DNS (PTR), not the DNS
+    # query name and not the TLS SNI.  Using it as --hostlist-domains makes a
+    # profile silently miss the connection, so only correlated DNS queries are
+    # accepted as actionable domains.
     $connectionTime = [DateTime]::Parse($Connection.TimeUtc).ToUniversalTime()
     $candidate = $DnsEvents |
         Where-Object {
@@ -207,6 +208,7 @@ function InvokeAdaptiveSummary {
             Process = $connection.Process
             Image = $connection.Image
             Domain = $domain
+            DomainSource = $(if($domain){'DNS'}else{'IP'})
             DestinationIp = $connection.DestinationIp
             DestinationPort = $connection.DestinationPort
             Protocol = $connection.Protocol
@@ -283,6 +285,7 @@ function Get-AdaptiveApplicationRows([string]$OnlyProcess) {
             Process = $connection.Process
             Image = $connection.Image
             Domain = $domain
+            DomainSource = $(if($domain){'DNS'}else{'IP'})
             DestinationIp = $connection.DestinationIp
             DestinationPort = $connection.DestinationPort
             Protocol = $connection.Protocol
@@ -353,7 +356,7 @@ function InvokeAdaptiveLiveConnections {
     $apps=Join-Path $DataDir 'apps-map.csv'
     if(Test-Path -LiteralPath $apps){
         foreach($known in @(Import-Csv -LiteralPath $apps)){
-            if($known.Domain -and $known.Domain -ne '-'){
+            if($known.Domain -and $known.Domain -ne '-' -and $known.DomainSource -eq 'DNS'){
                 $domainKey='{0}|{1}|{2}' -f ([string]$known.Process).ToLowerInvariant(),$known.DestinationIp,[int]$known.DestinationPort
                 if(-not $domainCache.ContainsKey($domainKey)){$domainCache[$domainKey]=[string]$known.Domain}
             }
@@ -382,6 +385,21 @@ function InvokeAdaptiveLiveConnections {
         $rows.Add([pscustomobject][ordered]@{Process=$connection.Process;Domain=$domain;DestinationIp=$connection.DestinationIp;DestinationPort=$connection.DestinationPort;Protocol='UDP';State='Недавно';ObservedUtc=$time.ToLocalTime().ToString('HH:mm:ss')})
     }
     return @($rows|Sort-Object Process,DestinationIp,DestinationPort,Protocol -Unique)
+}
+
+function InvokeAdaptiveScenarioConnections([string[]]$Processes,[DateTime]$SinceUtc) {
+    $connections=@(Read-JsonLines $ConnectionLog)
+    $dns=@(Read-JsonLines $DnsLog)
+    $rows=foreach($connection in $connections){
+        if($Processes.Count -and $Processes -inotcontains [string]$connection.Process){continue}
+        $time=[DateTime]::MinValue
+        if(-not [DateTime]::TryParse([string]$connection.TimeUtc,[ref]$time)){continue}
+        if($time.ToUniversalTime() -lt $SinceUtc.ToUniversalTime()){continue}
+        if([string]$connection.Initiated -ne 'true' -or (Test-IsNoiseTarget $connection)){continue}
+        $domain=Resolve-DomainForConnection -Connection $connection -DnsEvents $dns -WindowSeconds $DnsWindowSeconds
+        [pscustomobject][ordered]@{Process=$connection.Process;Domain=$domain;DomainSource=$(if($domain){'DNS'}else{'IP'});DestinationIp=$connection.DestinationIp;DestinationPort=$connection.DestinationPort;Protocol=$connection.Protocol;State='Сценарий';ObservedUtc=$time.ToLocalTime().ToString('HH:mm:ss')}
+    }
+    return @($rows|Sort-Object Process,Domain,DestinationIp,DestinationPort,Protocol -Unique)
 }
 
 function InvokeAdaptiveFocus([string]$ProcessName) {
@@ -447,7 +465,7 @@ function InvokeAdaptiveSysmonInstall {
 function InvokeAdaptiveSetup {
     if(-not (Test-IsAdministrator)){throw 'Первичная настройка требует PowerShell от имени администратора.'}
     InvokeAdaptiveSysmonInstall
-    if(-not (Resolve-AdaptiveEngine)){Install-AdaptiveEngine}
+    Install-AdaptiveEngine
     InvokeAdaptiveStart
     Write-Host 'Настройка завершена. Откройте интерфейс командой: .\AdaptiveZapret.ps1 ui' -ForegroundColor Green
 }
@@ -479,7 +497,8 @@ function InvokeAdaptiveLearningStatus {
     if(-not (Test-Path -LiteralPath $path)){return [pscustomobject]@{Active=$false;Index=0;Total=0;Profile='';Process='';Target='';Protocol='';Passes=0;PassesRequired=0}}
     $session=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json;$index=[int]$session.Index;$candidates=@($session.Candidates)
     $profile=$(if($index -ge 0 -and $index -lt $candidates.Count){[string]$candidates[$index]}else{''});$target=$(if($session.Targets){"$(@($session.Targets).Count) целей"}elseif($session.Domain){[string]$session.Domain}else{[string]$session.Ip})
-    [pscustomobject]@{Active=$true;Index=($index+1);Total=$candidates.Count;Profile=$profile;Process=[string]$session.Process;Target=$(if($session.Targets){$target}else{"{0}:{1}" -f $target,$session.Port});Protocol=[string]$session.Protocol;Passes=[int]$session.ConsecutivePasses;PassesRequired=[int]$session.PassesRequired}
+    $evidence=Get-AdaptiveProfileEvidence
+    [pscustomobject]@{Active=$true;Index=($index+1);Total=$candidates.Count;Profile=($profile -replace '^flowseal::','');Process=[string]$session.Process;Target=$(if($session.Targets){$target}else{"{0}:{1}" -f $target,$session.Port});Protocol=[string]$session.Protocol;Passes=[int]$session.ConsecutivePasses;PassesRequired=[int]$session.PassesRequired;DebugLines=$evidence.DebugLines;Recognized=$evidence.Recognized;HostChecks=$evidence.HostChecks;DesyncEvidence=$evidence.DesyncEvidence}
 }
 function InvokeAdaptiveLearningCancel {
     $path=Join-Path $Root 'data\learning.json'

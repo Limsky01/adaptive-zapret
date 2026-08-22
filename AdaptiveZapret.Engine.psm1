@@ -10,11 +10,14 @@ $Script:StrategyHistoryFile = Join-Path $Script:DataDir 'strategy-history.jsonl'
 $Script:EnginePidFile = Join-Path $Script:RuntimeDir 'winws.pid'
 $Script:EngineLog = Join-Path $Script:RuntimeDir 'winws.log'
 $Script:EngineErrorLog = Join-Path $Script:RuntimeDir 'winws-error.log'
+$Script:EngineDebugLog = Join-Path $Script:RuntimeDir 'winws-debug.log'
+$Script:EngineCommandFile = Join-Path $Script:RuntimeDir 'winws-command.txt'
+$Script:ScenarioDir = Join-Path $Script:RuntimeDir 'scenario'
 $Script:SettingsFile = Join-Path $Script:ConfigDir 'settings.json'
 $Script:StrategiesFile = Join-Path $Script:ConfigDir 'strategies.json'
 $Script:FirewallPrefix = 'AdaptiveZapret-'
 
-New-Item -ItemType Directory -Path $Script:DataDir,$Script:ConfigDir,$Script:RuntimeDir -Force | Out-Null
+New-Item -ItemType Directory -Path $Script:DataDir,$Script:ConfigDir,$Script:RuntimeDir,$Script:ScenarioDir -Force | Out-Null
 
 function Write-AdaptiveJson([string]$Path, [object]$Value) {
     $temp = "$Path.tmp"
@@ -30,7 +33,7 @@ function Read-AdaptiveJson([string]$Path, $Default) {
 function Initialize-AdaptiveConfiguration {
     if (-not (Test-Path -LiteralPath $Script:SettingsFile)) {
         Write-AdaptiveJson $Script:SettingsFile ([ordered]@{
-            SchemaVersion = 1
+            SchemaVersion = 2
             EngineRoot = ''
             AutoStartCollector = $true
             MaxAttemptsPerSession = 12
@@ -40,16 +43,7 @@ function Initialize-AdaptiveConfiguration {
         })
     }
     if (-not (Test-Path -LiteralPath $Script:StrategiesFile)) {
-        $profiles = @(
-            [ordered]@{ Id='multisplit-1'; Protocol='TCP'; Args=@('--dpi-desync=multisplit','--dpi-desync-split-pos=1') },
-            [ordered]@{ Id='multisplit-sniext'; Protocol='TCP'; Args=@('--dpi-desync=multisplit','--dpi-desync-split-pos=sniext+1') },
-            [ordered]@{ Id='multidisorder-1'; Protocol='TCP'; Args=@('--dpi-desync=multidisorder','--dpi-desync-split-pos=1') },
-            [ordered]@{ Id='fake-multisplit'; Protocol='TCP'; Args=@('--dpi-desync=fake,multisplit','--dpi-desync-repeats=6','--dpi-desync-split-pos=1') },
-            [ordered]@{ Id='fake-multidisorder'; Protocol='TCP'; Args=@('--dpi-desync=fake,multidisorder','--dpi-desync-repeats=6','--dpi-desync-split-pos=1') },
-            [ordered]@{ Id='hostfakesplit'; Protocol='TCP'; Args=@('--dpi-desync=hostfakesplit','--dpi-desync-hostfakesplit-mod=host=www.google.com') },
-            [ordered]@{ Id='fake-quic'; Protocol='UDP'; Args=@('--dpi-desync=fake','--dpi-desync-repeats=6') }
-        )
-        Write-AdaptiveJson $Script:StrategiesFile ([ordered]@{ SchemaVersion=1; Profiles=$profiles })
+        Write-AdaptiveJson $Script:StrategiesFile ([ordered]@{ SchemaVersion=2; Source='Flowseal general*.bat'; Profiles=@() })
     }
     if (-not (Test-Path -LiteralPath $Script:RulesFile)) {
         Write-AdaptiveJson $Script:RulesFile ([ordered]@{ SchemaVersion=1; Rules=@() })
@@ -59,6 +53,21 @@ function Initialize-AdaptiveConfiguration {
 function Get-AdaptiveSettings { Initialize-AdaptiveConfiguration; return Read-AdaptiveJson $Script:SettingsFile $null }
 function Get-AdaptiveRules { Initialize-AdaptiveConfiguration; return @(Read-AdaptiveJson $Script:RulesFile ([pscustomobject]@{Rules=@()}) | Select-Object -ExpandProperty Rules) }
 function Save-AdaptiveRules([array]$Rules) { Write-AdaptiveJson $Script:RulesFile ([ordered]@{ SchemaVersion=1; Rules=@($Rules) }) }
+
+function Invoke-AdaptiveConfigurationMigration {
+    $settings=Get-AdaptiveSettings
+    if([int]$settings.SchemaVersion -ge 2){return}
+    $rules=@(Get-AdaptiveRules)
+    foreach($rule in $rules){
+        if($rule.Mode -eq 'zapret' -and $rule.Strategy -and $rule.Strategy -notlike 'flowseal::*'){
+            $rule|Add-Member -NotePropertyName LegacyStrategy -NotePropertyValue ([string]$rule.Strategy) -Force
+            $rule.Strategy='';$rule.Enabled=$false
+        }
+    }
+    Save-AdaptiveRules $rules
+    $settings.SchemaVersion=2
+    Write-AdaptiveJson $Script:SettingsFile $settings
+}
 
 function Resolve-AdaptiveEngine {
     $settings = Get-AdaptiveSettings
@@ -91,7 +100,10 @@ function Set-AdaptiveEngineRoot([string]$Path) {
 
 function Install-AdaptiveEngine {
     $destination = Join-Path $Script:Root 'engine'
-    if (Resolve-AdaptiveEngine) { Write-Host 'Движок уже установлен или обнаружен.' -ForegroundColor Yellow; return }
+    if (Resolve-AdaptiveEngine) {
+        if(-not (Get-AdaptiveFlowsealRoot)){throw 'Найден только winws.exe, но нет полного комплекта Flowseal с general*.bat, lists и bin. Укажите полную папку Flowseal.'}
+        Write-Host 'Полный комплект Flowseal уже установлен или обнаружен.' -ForegroundColor Yellow; return
+    }
     $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest' -Headers @{ 'User-Agent'='AdaptiveZapret' }
     $asset = @($release.assets) | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1
     if (-not $asset) { throw 'В последнем официальном релизе Flowseal не найден ZIP-архив.' }
@@ -169,6 +181,102 @@ public static class AdaptiveTcpReset {
 '@
 }
 
+function Get-AdaptiveFlowsealRoot {
+    $engine = Resolve-AdaptiveEngine
+    if (-not $engine) { return $null }
+    $candidate = Split-Path -Parent $engine.Bin
+    if (Test-Path -LiteralPath (Join-Path $candidate 'general.bat')) { return $candidate }
+    $bat = Get-ChildItem -LiteralPath $engine.Root -Filter 'general.bat' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($bat) { return $bat.DirectoryName }
+    return $null
+}
+
+function Get-AdaptiveFlowsealStrategies {
+    $root = Get-AdaptiveFlowsealRoot
+    if (-not $root) { return @() }
+    return @(Get-ChildItem -LiteralPath $root -Filter 'general*.bat' -File -ErrorAction SilentlyContinue |
+        Sort-Object @{Expression={ if ($_.Name -eq 'general.bat') { 0 } else { 1 } }},Name |
+        ForEach-Object { [pscustomobject]@{ Id=('flowseal::' + $_.Name); Name=$_.BaseName; Path=$_.FullName; Kind='FlowsealBat' } })
+}
+
+function Get-AdaptiveFlowsealCommand([string]$BatPath,[array]$Targets) {
+    $engine = Resolve-AdaptiveEngine
+    $flowRoot = Get-AdaptiveFlowsealRoot
+    if (-not $engine -or -not $flowRoot) { throw 'Не найден полный комплект Flowseal.' }
+    $lines = @(Get-Content -LiteralPath $BatPath)
+    $startIndex = -1
+    for ($i=0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match 'winws\.exe') { $startIndex=$i; break } }
+    if ($startIndex -lt 0) { throw "В стратегии не найдена команда winws.exe: $BatPath" }
+    $parts = New-Object 'System.Collections.Generic.List[string]'
+    for ($i=$startIndex; $i -lt $lines.Count; $i++) {
+        $line=[string]$lines[$i]
+        if ($i -eq $startIndex) {
+            $match=[regex]::Match($line,'winws\.exe"\s*(.*)$',[Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if (-not $match.Success) { throw "Не удалось разобрать запуск winws: $BatPath" }
+            $line=$match.Groups[1].Value
+        }
+        $continued=$line.TrimEnd().EndsWith('^')
+        if ($continued) { $line=$line.TrimEnd();$line=$line.Substring(0,$line.Length-1) }
+        $line=$line.Replace('^!','!').Trim()
+        if ($line) { $parts.Add($line) }
+        if (-not $continued) { break }
+    }
+    $raw=($parts -join ' ')
+    $bin=($engine.Bin.TrimEnd('\') + '\')
+    $lists=(Join-Path $flowRoot 'lists').TrimEnd('\') + '\'
+    $tcpPorts=@($Targets|Where-Object Protocol -eq 'TCP'|ForEach-Object{[int]$_.Port}|Where-Object{$_ -ge 1024}|Sort-Object -Unique)
+    $udpPorts=@($Targets|Where-Object Protocol -eq 'UDP'|ForEach-Object{[int]$_.Port}|Where-Object{$_ -ge 1024}|Sort-Object -Unique)
+    $raw=$raw.Replace('%BIN%',$bin).Replace('%LISTS%',$lists)
+    $raw=$raw.Replace('%GameFilterTCP%',$(if($tcpPorts.Count){$tcpPorts -join ','}else{'12'}))
+    $raw=$raw.Replace('%GameFilterUDP%',$(if($udpPorts.Count){$udpPorts -join ','}else{'12'}))
+
+    $hosts=@($Targets|ForEach-Object{[string]$_.Domain}|Where-Object{$_ -and $_ -ne '-'}|Sort-Object -Unique)
+    $ips=@($Targets|ForEach-Object{[string]$_.Ip}|Where-Object{$_}|Sort-Object -Unique)
+    $hostFile=Join-Path $Script:ScenarioDir 'hosts.txt'
+    $ipFile=Join-Path $Script:ScenarioDir 'ips.txt'
+    $emptyFile=Join-Path $Script:ScenarioDir 'exclude-empty.txt'
+    Set-Content -LiteralPath $hostFile -Value $hosts -Encoding ASCII
+    Set-Content -LiteralPath $ipFile -Value $ips -Encoding ASCII
+    Set-Content -LiteralPath $emptyFile -Value @() -Encoding ASCII
+    $quotedIp='--ipset="' + $ipFile + '"'
+    $quotedEmptyHost='--hostlist-exclude="' + $emptyFile + '"'
+    $quotedEmptyIp='--ipset-exclude="' + $emptyFile + '"'
+    # Sysmon/DNS correlation is not TLS SNI. During a scenario test, select the
+    # exact observed IPs and remove Flowseal's static hostlists. This guarantees
+    # that a PTR/CNAME mismatch cannot silently exclude the packet.
+    $raw=[regex]::Replace($raw,'\s*--hostlist="[^"]+"','')
+    $raw=[regex]::Replace($raw,'\s*--hostlist-domains=[^\s]+','')
+    if ($ips.Count) { $raw=[regex]::Replace($raw,'--ipset="[^"]+"',$quotedIp) }
+    $raw=[regex]::Replace($raw,'--hostlist-exclude="[^"]+"',$quotedEmptyHost)
+    $raw=[regex]::Replace($raw,'--ipset-exclude="[^"]+"',$quotedEmptyIp)
+    Remove-Item -LiteralPath $Script:EngineDebugLog -Force -ErrorAction SilentlyContinue
+    return ('--debug="@' + $Script:EngineDebugLog + '" ' + $raw)
+}
+
+function Start-AdaptiveFlowsealStrategy([string]$StrategyId,[array]$Targets) {
+    $strategy=@(Get-AdaptiveFlowsealStrategies|Where-Object Id -eq $StrategyId)|Select-Object -First 1
+    if (-not $strategy) { throw "Стратегия Flowseal не найдена: $StrategyId" }
+    $engine=Resolve-AdaptiveEngine
+    Stop-AdaptiveEngine | Out-Null
+    if (@(Get-Process winws -ErrorAction SilentlyContinue).Count) { throw 'Уже запущен сторонний winws. Остановите его штатным способом.' }
+    $arguments=Get-AdaptiveFlowsealCommand -BatPath $strategy.Path -Targets $Targets
+    Set-Content -LiteralPath $Script:EngineCommandFile -Value ((('"'+$engine.Winws+'" ') + $arguments)) -Encoding UTF8
+    $process=Start-Process -FilePath $engine.Winws -ArgumentList $arguments -WorkingDirectory $engine.Bin -WindowStyle Hidden -RedirectStandardOutput $Script:EngineLog -RedirectStandardError $Script:EngineErrorLog -PassThru
+    Set-Content -LiteralPath $Script:EnginePidFile -Value $process.Id -Encoding ASCII
+    Start-Sleep -Milliseconds 1000
+    if (-not (Get-Process -Id $process.Id -ErrorAction SilentlyContinue)) { throw "winws завершился. Проверьте $Script:EngineErrorLog" }
+    Write-Host "Запущена полная стратегия Flowseal: $($strategy.Name), PID $($process.Id)" -ForegroundColor Green
+}
+
+function Get-AdaptiveProfileEvidence {
+    $debugLines=$(if(Test-Path -LiteralPath $Script:EngineDebugLog){@(Get-Content -LiteralPath $Script:EngineDebugLog -Tail 300 -ErrorAction SilentlyContinue)}else{@()})
+    $debugBytes=$(if(Test-Path -LiteralPath $Script:EngineDebugLog){[long](Get-Item -LiteralPath $Script:EngineDebugLog).Length}else{0})
+    $recognized=@($debugLines|Where-Object{$_ -match 'TLS ClientHello|QUIC initial|HTTP request|discord voice|STUN message'}).Count
+    $hostChecks=@($debugLines|Where-Object{$_ -match 'hostlist check for'}).Count
+    $desync=@($debugLines|Where-Object{$_ -match 'sending|multisplit|multidisorder|hostfakesplit|fakedsplit'}).Count
+    [pscustomobject]@{DebugLines=$debugLines.Count;DebugBytes=$debugBytes;Recognized=$recognized;HostChecks=$hostChecks;DesyncEvidence=$desync;CommandFile=$Script:EngineCommandFile;DebugFile=$Script:EngineDebugLog}
+}
+
 function Convert-AdaptiveTcpAddress([string]$Address){
     return [BitConverter]::ToUInt32([Net.IPAddress]::Parse($Address).GetAddressBytes(),0)
 }
@@ -217,6 +325,11 @@ function Restart-AdaptiveTargetConnection([object]$Rule,[int]$DelaySeconds=5) {
 }
 
 function Start-AdaptiveProfile([object]$Rule,[string]$ProfileId) {
+    if($ProfileId -like 'flowseal::*'){
+        Start-AdaptiveFlowsealStrategy -StrategyId $ProfileId -Targets @($Rule)
+        Restart-AdaptiveTargetConnection -Rule $Rule -DelaySeconds 5
+        return
+    }
     $engine = Resolve-AdaptiveEngine
     if (-not $engine) { throw 'winws.exe не найден. Выполните engine-install или engine-set <папка>.' }
     $profile = Get-AdaptiveProfile $ProfileId
@@ -287,7 +400,11 @@ function Apply-AdaptiveRules {
       }
       if ($zapret.Count -gt 0) {
         if (@($zapret | Where-Object { -not $_.Strategy }).Count) { throw 'У zapret-правила ещё нет проверенной стратегии. Запустите learn <процесс>.' }
-        Start-AdaptiveRuleSet $zapret
+        $flowsealStrategies=@($zapret|Where-Object{$_.Strategy -like 'flowseal::*'}|Select-Object -ExpandProperty Strategy -Unique)
+        if($flowsealStrategies.Count){
+            if($flowsealStrategies.Count -ne 1 -or $flowsealStrategies.Count -ne @($zapret|Select-Object -ExpandProperty Strategy -Unique).Count){throw 'Одновременно можно применить только одну полную стратегию Flowseal.'}
+            Start-AdaptiveFlowsealStrategy -StrategyId $flowsealStrategies[0] -Targets $zapret
+        }else{Start-AdaptiveRuleSet $zapret}
       } else { Stop-AdaptiveEngine | Out-Null }
       Write-Host 'Правила применены.' -ForegroundColor Green
     } catch {
@@ -341,12 +458,11 @@ function Start-AdaptiveLearning([string]$ProcessName,[string]$Domain='',[string]
     }
     $Protocol=$Protocol.ToUpperInvariant()
     Test-AdaptiveSafeTarget $ProcessName $Domain $Ip $Port
-    $catalog = Read-AdaptiveJson $Script:StrategiesFile $null
-    $candidates = @($catalog.Profiles | Where-Object { $_.Protocol -eq $Protocol } | Select-Object -ExpandProperty Id)
+    $candidates = @(Get-AdaptiveFlowsealStrategies | Select-Object -ExpandProperty Id)
     if ($candidates.Count -eq 0) { throw "Нет профилей для $Protocol" }
-    $max=[Math]::Max(1,[int](Get-AdaptiveSettings).MaxAttemptsPerSession)
-    $candidates=@($candidates | Select-Object -First $max)
-    $session = [ordered]@{ Process=$ProcessName; Domain=$Domain; Ip=$Ip; Port=$Port; Protocol=$Protocol; Candidates=$candidates; Index=0; ConsecutivePasses=0; PassesRequired=2; Results=@(); StartedUtc=[DateTime]::UtcNow.ToString('o') }
+    # The candidate set is the installed Flowseal release itself.  Do not
+    # silently truncate it using the legacy synthetic-profile limit.
+    $session = [ordered]@{ Process=$ProcessName; Domain=$Domain; Ip=$Ip; Port=$Port; Protocol=$Protocol; Candidates=$candidates; Index=0; ConsecutivePasses=0; PassesRequired=2; EvidenceBaselineBytes=0; Results=@(); StartedUtc=[DateTime]::UtcNow.ToString('o') }
     Write-AdaptiveJson $Script:LearningFile $session
     $rule = [pscustomobject]@{ Process=$ProcessName; Domain=$Domain; Ip=$Ip; Port=$Port; Protocol=$Protocol }
     Start-AdaptiveProfile $rule $candidates[0]
@@ -355,17 +471,24 @@ function Start-AdaptiveLearning([string]$ProcessName,[string]$Domain='',[string]
 
 function Start-AdaptiveLearningGroup([array]$Targets) {
     $targets=@($Targets);if(-not $targets.Count){throw 'Не выбрано ни одной цели.'}
-    $protocols=@($targets|ForEach-Object{([string]$_.Protocol).ToUpperInvariant()}|Sort-Object -Unique);if($protocols.Count -ne 1){throw 'Один тест может включать только TCP-цели или только UDP-цели.'}
+    $protocols=@($targets|ForEach-Object{([string]$_.Protocol).ToUpperInvariant()}|Sort-Object -Unique)
     $processes=@($targets|ForEach-Object{$_.Process}|Sort-Object -Unique)
     foreach($target in $targets){Test-AdaptiveSafeTarget $target.Process $target.Domain $target.Ip ([int]$target.Port)}
-    $protocol=$protocols[0];$catalog=Read-AdaptiveJson $Script:StrategiesFile $null;$candidates=@($catalog.Profiles|Where-Object{$_.Protocol -eq $protocol}|Select-Object -ExpandProperty Id)
-    if(-not $candidates.Count){throw "Нет профилей для $protocol"};$max=[Math]::Max(1,[int](Get-AdaptiveSettings).MaxAttemptsPerSession);$candidates=@($candidates|Select-Object -First $max)
-    $session=[ordered]@{Process=($processes -join ', ');Targets=$targets;Protocol=$protocol;Candidates=$candidates;Index=0;ConsecutivePasses=0;PassesRequired=2;Results=@();StartedUtc=[DateTime]::UtcNow.ToString('o')}
+    $protocol=($protocols -join '+');$candidates=@(Get-AdaptiveFlowsealStrategies|Select-Object -ExpandProperty Id)
+    if(-not $candidates.Count){throw "Нет профилей для $protocol"}
+    $session=[ordered]@{Process=($processes -join ', ');Targets=$targets;Protocol=$protocol;Candidates=$candidates;Index=0;ConsecutivePasses=0;PassesRequired=2;EvidenceBaselineBytes=0;Results=@();StartedUtc=[DateTime]::UtcNow.ToString('o')}
     Write-AdaptiveJson $Script:LearningFile $session;Start-AdaptiveLearningGroupProfile -Targets $targets -ProfileId $candidates[0]
     Write-Host "Попытка 1/$($candidates.Count): $($targets.Count) целей." -ForegroundColor Cyan
 }
 
 function Start-AdaptiveLearningGroupProfile([array]$Targets,[string]$ProfileId) {
+    if($ProfileId -like 'flowseal::*'){
+        Start-AdaptiveFlowsealStrategy -StrategyId $ProfileId -Targets $Targets
+        foreach($rule in @($Targets|Where-Object Protocol -eq 'TCP')){Restart-AdaptiveTargetConnection -Rule $rule -DelaySeconds 0}
+        Write-Host 'Стратегия применена. Ожидание новых TCP/UDP-потоков: 5 сек.' -ForegroundColor Cyan
+        Start-Sleep -Seconds 5
+        return
+    }
     $rules=@($Targets|ForEach-Object{[pscustomobject]@{Process=$_.Process;Domain=$_.Domain;Ip=$_.Ip;Port=[int]$_.Port;Protocol=$_.Protocol;Strategy=$ProfileId}})
     Start-AdaptiveRuleSet $rules
     if($rules[0].Protocol -eq 'TCP'){foreach($rule in $rules){Restart-AdaptiveTargetConnection -Rule $rule -DelaySeconds 0};Write-Host 'Все выбранные TCP-соединения закрыты. Ожидание: 5 сек.' -ForegroundColor Cyan;Start-Sleep -Seconds 5}else{Write-Host 'UDP-профиль применён ко всей выбранной группе.' -ForegroundColor Cyan}
@@ -376,13 +499,17 @@ function Submit-AdaptiveLearningResult([ValidateSet('pass','fail','skip')][strin
     if (-not $session) { throw 'Активного подбора нет. Запустите learn <процесс>.' }
     $current = [string]$session.Candidates[[int]$session.Index]
     $targets=$(if($session.Targets){@($session.Targets)}else{@([pscustomobject]@{Process=$session.Process;Domain=$session.Domain;Ip=$session.Ip;Port=$session.Port;Protocol=$session.Protocol})})
-    $resultRow=[pscustomobject]@{ Process=$session.Process; Targets=$targets.Count; Strategy=$current; Result=$Result; TimeUtc=[DateTime]::UtcNow.ToString('o') }
+    $evidence=Get-AdaptiveProfileEvidence
+    if($Result -eq 'pass' -and $current -like 'flowseal::*' -and [long]$evidence.DebugBytes -le [long]$session.EvidenceBaselineBytes){throw 'Нельзя подтвердить профиль: после запуска проверки winws не увидел новых пакетов. Повторите действие и дождитесь нового соединения.'}
+    $resultRow=[pscustomobject]@{ Process=$session.Process; Targets=$targets.Count; Strategy=$current; Result=$Result; DebugLines=$evidence.DebugLines;Recognized=$evidence.Recognized;HostChecks=$evidence.HostChecks;DesyncEvidence=$evidence.DesyncEvidence; TimeUtc=[DateTime]::UtcNow.ToString('o') }
     $session.Results = @($session.Results) + $resultRow
     Add-Content -LiteralPath $Script:StrategyHistoryFile -Value ($resultRow|ConvertTo-Json -Compress) -Encoding UTF8
     if ($Result -eq 'pass') {
         $session.ConsecutivePasses=[int]$session.ConsecutivePasses+1
         if([int]$session.ConsecutivePasses -lt [int]$session.PassesRequired){
+            $session.EvidenceBaselineBytes=[long]$evidence.DebugBytes
             Write-AdaptiveJson $Script:LearningFile $session
+            if($session.Targets){Start-AdaptiveLearningGroupProfile -Targets $targets -ProfileId $current}else{$repeatRule=[pscustomobject]@{Process=$session.Process;Domain=$session.Domain;Ip=$session.Ip;Port=[int]$session.Port;Protocol=$session.Protocol};Restart-AdaptiveTargetConnection -Rule $repeatRule -DelaySeconds 5}
             Write-Host "Первый успех отмечен. Повторите подключение с тем же профилем и снова выполните test pass/fail." -ForegroundColor Cyan
             return
         }
@@ -392,6 +519,7 @@ function Submit-AdaptiveLearningResult([ValidateSet('pass','fail','skip')][strin
         return
     }
     $session.ConsecutivePasses=0
+    $session.EvidenceBaselineBytes=0
     $session.Index = [int]$session.Index + 1
     if ($session.Index -ge @($session.Candidates).Count) {
         Write-AdaptiveJson (Join-Path $Script:DataDir ("learning-failed-{0}.json" -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss'))) $session
@@ -409,6 +537,17 @@ function Submit-AdaptiveLearningResult([ValidateSet('pass','fail','skip')][strin
 function Export-AdaptiveAutoBatch {
     $rules = @(Get-AdaptiveRules | Where-Object { $_.Enabled -and $_.Mode -eq 'zapret' -and $_.Strategy })
     if (-not $rules.Count) { throw 'Нет проверенного zapret-правила для экспорта.' }
+    $flow=@($rules|Where-Object{$_.Strategy -like 'flowseal::*'}|Select-Object -ExpandProperty Strategy -Unique)
+    if($flow.Count){
+      if($flow.Count -ne 1){throw 'Экспорт нескольких разных полных стратегий Flowseal не поддерживается.'}
+      $strategy=@(Get-AdaptiveFlowsealStrategies|Where-Object Id -eq $flow[0])|Select-Object -First 1
+      $engine=Resolve-AdaptiveEngine;$arguments=Get-AdaptiveFlowsealCommand -BatPath $strategy.Path -Targets $rules
+      $path=Join-Path $Script:Root 'general (AUTO).bat'
+      $line='start "Adaptive Zapret AUTO" /min "' + $engine.Winws + '" ' + $arguments
+      Set-Content -LiteralPath $path -Value @('@echo off','chcp 65001 > nul',('cd /d "'+$engine.Bin+'"'),$line) -Encoding UTF8
+      Write-Host "Экспортирована полная стратегия Flowseal: $($strategy.Name). Файл: $path" -ForegroundColor Green
+      return
+    }
     $tcpPorts=@($rules|Where-Object Protocol -eq TCP|ForEach-Object Port|Sort-Object -Unique)
     $udpPorts=@($rules|Where-Object Protocol -eq UDP|ForEach-Object Port|Sort-Object -Unique)
     $args=@();if($tcpPorts.Count){$args+='--wf-tcp='+($tcpPorts -join ',')};if($udpPorts.Count){$args+='--wf-udp='+($udpPorts -join ',')}
@@ -435,13 +574,16 @@ function Get-AdaptiveEngineStatus {
 
 function Test-AdaptiveEngineSelf {
     Initialize-AdaptiveConfiguration
-    $catalog = Read-AdaptiveJson $Script:StrategiesFile $null
-    if (@($catalog.Profiles).Count -lt 2) { throw 'Каталог стратегий пуст.' }
-    foreach ($profile in $catalog.Profiles) {
-        if (-not $profile.Id -or -not $profile.Protocol -or @($profile.Args).Count -eq 0) { throw "Некорректный профиль: $($profile.Id)" }
+    $flowseal=@(Get-AdaptiveFlowsealStrategies)
+    if(-not (Resolve-AdaptiveEngine)){Write-Host 'Engine self-test: приложение исправно; Flowseal ещё не установлен (выполните setup).' -ForegroundColor Yellow;return}
+    if(-not $flowseal.Count){throw 'Найден winws.exe, но отсутствуют стратегии general*.bat полного комплекта Flowseal.'}
+    foreach($strategy in $flowseal){
+        $text=Get-Content -LiteralPath $strategy.Path -Raw
+        if($text -notmatch 'winws\.exe' -or $text -notmatch '--dpi-desync'){throw "Некорректная стратегия Flowseal: $($strategy.Path)"}
     }
-    Write-Host "Engine self-test: OK ($(@($catalog.Profiles).Count) profiles)" -ForegroundColor Green
+    Write-Host "Engine self-test: OK ($($flowseal.Count) полных стратегий Flowseal)" -ForegroundColor Green
 }
 
 Initialize-AdaptiveConfiguration
+Invoke-AdaptiveConfigurationMigration
 Export-ModuleMember -Function '*-Adaptive*'
